@@ -1,7 +1,6 @@
 """Tests for backend adapter process lifecycle management."""
 
 import os
-import signal
 import subprocess
 import tempfile
 from pathlib import Path
@@ -474,47 +473,57 @@ def test_sglang_adapter_lora_endpoints():
 # -- Signal handling tests -----------------------------------------------
 
 
-def test_signal_group_with_killpg():
-    """Verify _signal_group uses killpg on POSIX systems."""
+def test_start_uses_cross_platform_group_kwargs():
+    """Verify start() launches the subprocess with process_compat's group kwargs."""
+    config = create_test_config()
+    adapter = VLLMAdapter(config)
+
+    with mock.patch("omniai.engine.backends.subprocess.Popen") as mock_popen:
+        mock_popen.return_value = mock.MagicMock(pid=4321)
+        adapter.start()
+        _, kwargs = mock_popen.call_args
+        for key, value in process_compat_kwargs().items():
+            assert kwargs[key] == value
+
+
+def process_compat_kwargs() -> dict:
+    from omniai.engine import process_compat
+
+    return process_compat.new_group_popen_kwargs()
+
+
+def test_stop_terminates_then_kills_group():
+    """Verify stop() calls terminate_group first, then kill_group on timeout."""
     config = create_test_config()
     adapter = VLLMAdapter(config)
 
     mock_process = mock.MagicMock()
     mock_process.pid = 1234
+    mock_process.wait.side_effect = [subprocess.TimeoutExpired(cmd="x", timeout=15), None]
     adapter.process = mock_process
 
-    with mock.patch("os.killpg") as mock_killpg:
-        with mock.patch("os.getpgid", return_value=1234):
-            adapter._signal_group(signal.SIGTERM)
-            mock_killpg.assert_called_once_with(1234, signal.SIGTERM)
+    with mock.patch("omniai.engine.backends.process_compat.terminate_group") as mock_term:
+        with mock.patch("omniai.engine.backends.process_compat.kill_group") as mock_kill:
+            adapter.stop()
+            mock_term.assert_called_once_with(mock_process)
+            mock_kill.assert_called_once_with(mock_process)
 
 
-def test_signal_group_handles_process_lookup_error():
-    """Verify _signal_group handles ProcessLookupError gracefully."""
+def test_stop_when_terminate_succeeds_does_not_kill():
+    """Verify stop() does not force-kill when the process exits gracefully."""
     config = create_test_config()
     adapter = VLLMAdapter(config)
 
     mock_process = mock.MagicMock()
-    mock_process.pid = 9999
+    mock_process.pid = 1234
+    mock_process.wait.return_value = None  # exits within the graceful timeout
     adapter.process = mock_process
 
-    with mock.patch("os.killpg", side_effect=ProcessLookupError):
-        # Should not raise
-        adapter._signal_group(signal.SIGTERM)
-
-
-def test_stop_sends_sigterm_then_sigkill():
-    """Verify stop() sends SIGTERM first, then SIGKILL if timeout."""
-    config = create_test_config()
-    adapter = VLLMAdapter(config)
-
-    mock_process = mock.MagicMock()
-    mock_process.poll.return_value = 1  # Already exited
-    adapter.process = mock_process
-
-    with mock.patch.object(adapter, "_signal_group") as mock_signal:
-        adapter.stop()
-        mock_signal.assert_called_with(signal.SIGTERM)
+    with mock.patch("omniai.engine.backends.process_compat.terminate_group") as mock_term:
+        with mock.patch("omniai.engine.backends.process_compat.kill_group") as mock_kill:
+            adapter.stop()
+            mock_term.assert_called_once_with(mock_process)
+            mock_kill.assert_not_called()
 
 
 def test_stop_closes_log_file():
