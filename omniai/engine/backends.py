@@ -25,6 +25,9 @@ from typing import IO, Any
 import httpx
 
 from omniai.engine.config import EngineConfig
+from omniai.logging import ProcessError, get_logger
+
+logger = get_logger(__name__)
 
 
 class BackendAdapter(abc.ABC):
@@ -102,15 +105,27 @@ class BackendAdapter(abc.ABC):
         workers it spawns into one process group, so :meth:`stop` can kill
         the whole tree and release GPU memory reliably.
         """
-        sink = self._open_log()
-        self.process = subprocess.Popen(
-            self.build_command(),
-            stdout=sink,
-            stderr=subprocess.STDOUT if sink is not subprocess.DEVNULL else subprocess.DEVNULL,
-            env=self.build_env(),
-            start_new_session=True,
-        )
-        return self.process
+        logger.info(f"🚀 Starting {self.config.backend_name} backend on port {self.config.port}")
+        try:
+            sink = self._open_log()
+            cmd = self.build_command()
+            logger.debug(f"📋 Command: {' '.join(cmd)}")
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=sink,
+                stderr=subprocess.STDOUT if sink is not subprocess.DEVNULL else subprocess.DEVNULL,
+                env=self.build_env(),
+                start_new_session=True,
+            )
+            logger.info(f"✅ Backend process spawned | pid={self.process.pid}")
+            return self.process
+        except Exception as exc:
+            logger.error(f"❌ Failed to start backend: {type(exc).__name__}: {exc}")
+            raise ProcessError(
+                f"Failed to spawn {self.config.backend_name} process",
+                context=f"Port: {self.config.port}, Model: {self.config.model}",
+                suggestion="Check system resources and model availability",
+            ) from exc
 
     def _signal_group(self, sig: signal.Signals) -> None:
         assert self.process is not None
@@ -119,38 +134,56 @@ class BackendAdapter(abc.ABC):
                 os.killpg(os.getpgid(self.process.pid), sig)
             else:  # pragma: no cover - non-POSIX fallback
                 self.process.send_signal(sig)
+            logger.debug(f"📍 Sent signal {sig.name} to process group")
         except ProcessLookupError:
-            pass
+            logger.debug(f"⚠️  Process already terminated")
 
     def stop(self) -> None:
+        logger.info("🛑 Stopping backend process")
         if self.process is not None:
-            self._signal_group(signal.SIGTERM)
             try:
-                self.process.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                self._signal_group(signal.SIGKILL)
-                self.process.wait(timeout=5)
-            self.process = None
+                logger.debug(f"📍 Sending SIGTERM to process {self.process.pid}")
+                self._signal_group(signal.SIGTERM)
+                try:
+                    self.process.wait(timeout=15)
+                    logger.info("✅ Process terminated gracefully")
+                except subprocess.TimeoutExpired:
+                    logger.warning("⚠️  Process did not respond to SIGTERM, sending SIGKILL")
+                    self._signal_group(signal.SIGKILL)
+                    self.process.wait(timeout=5)
+                    logger.info("✅ Process killed forcefully")
+            except Exception as exc:
+                logger.error(f"❌ Error stopping process: {type(exc).__name__}: {exc}")
+            finally:
+                self.process = None
         if self._log_file is not None:
+            logger.debug("📋 Closing log file")
             self._log_file.close()
             self._log_file = None
 
     def is_alive(self) -> bool:
         """True while the server process exists and has not exited."""
-        return self.process is not None and self.process.poll() is None
+        alive = self.process is not None and self.process.poll() is None
+        logger.debug(f"📊 Backend alive check | alive={alive}")
+        return alive
 
     async def wait_ready(self, timeout: float = 300.0, interval: float = 2.0) -> bool:
         """Poll the health endpoint until the server answers or timeout."""
+        logger.info(f"⏳ Waiting for backend to be ready | timeout={timeout}s | interval={interval}s")
         deadline = asyncio.get_event_loop().time() + timeout
+        attempt = 0
         async with httpx.AsyncClient() as client:
             while asyncio.get_event_loop().time() < deadline:
+                attempt += 1
                 try:
                     resp = await client.get(f"{self.config.base_url}/health")
                     if resp.status_code == 200:
+                        logger.info(f"✅ Backend is ready | attempts={attempt}")
                         return True
-                except httpx.HTTPError:
-                    pass
+                except httpx.HTTPError as exc:
+                    logger.debug(f"⏳ Health check attempt {attempt} failed: {type(exc).__name__}")
                 await asyncio.sleep(interval)
+        logger.error(f"❌ Backend did not become ready after {timeout}s | attempts={attempt}")
         return False
 
 
@@ -162,10 +195,12 @@ class VLLMAdapter(BackendAdapter):
         if self.config.enable_lora:
             # Gate for the /v1/load_lora_adapter runtime API.
             env["VLLM_ALLOW_RUNTIME_LORA_UPDATING"] = "True"
+            logger.debug("🔧 vLLM LoRA updates enabled")
         return env
 
     def build_command(self) -> list[str]:
         cfg = self.config
+        logger.debug(f"🔧 Building vLLM command | model={cfg.model} | quantization={cfg.quantization}")
         cmd = [
             "vllm",
             "serve",
@@ -179,20 +214,27 @@ class VLLMAdapter(BackendAdapter):
             cmd.extend(["--quantization", cfg.quantization])
             if cfg.quantization == "fp8":
                 cmd.extend(["--kv-cache-dtype", "fp8"])
+                logger.debug("🔧 vLLM fp8 quantization with fp8 KV cache")
         # PagedAttention is vLLM's native KV-cache layout; no flag needed,
         # but reject a request for a cache strategy vLLM cannot provide.
         if cfg.kv_cache not in (None, "paged_attention"):
+            logger.error(f"❌ vLLM does not support kv_cache={cfg.kv_cache}")
             raise ValueError(f"vLLM does not support kv_cache={cfg.kv_cache!r}")
         if cfg.prefix_caching:
             cmd.append("--enable-prefix-caching")
+            logger.debug("🔧 vLLM prefix caching enabled")
         if cfg.tensor_parallel_size > 1:
             cmd.extend(["--tensor-parallel-size", str(cfg.tensor_parallel_size)])
+            logger.debug(f"🔧 vLLM tensor parallelism: {cfg.tensor_parallel_size}")
         if cfg.gpu_memory_utilization is not None:
             cmd.extend(["--gpu-memory-utilization", str(cfg.gpu_memory_utilization)])
+            logger.debug(f"🔧 vLLM GPU memory: {cfg.gpu_memory_utilization:.1%}")
         if cfg.max_model_len is not None:
             cmd.extend(["--max-model-len", str(cfg.max_model_len)])
+            logger.debug(f"🔧 vLLM max context length: {cfg.max_model_len}")
         if cfg.enable_lora:
             cmd.extend(["--enable-lora", "--max-loras", str(cfg.max_loras)])
+            logger.debug(f"🔧 vLLM LoRA enabled | max_adapters={cfg.max_loras}")
         cmd.extend(self._extra_flags())
         return cmd
 
