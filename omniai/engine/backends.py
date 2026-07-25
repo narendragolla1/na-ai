@@ -301,9 +301,73 @@ class SGLangAdapter(BackendAdapter):
         return {"lora_name": name}
 
 
+class OllamaAdapter(BackendAdapter):
+    """Adapter for the Ollama server (``ollama serve``)."""
+
+    def _backend_env(self) -> dict[str, str]:
+        # Ensure Ollama listens on the port specified by EngineConfig
+        return {"OLLAMA_HOST": f"127.0.0.1:{self.config.port}"}
+
+    def build_command(self) -> list[str]:
+        # Start the background daemon
+        return ["ollama", "serve"]
+
+    async def wait_ready(self, timeout: float = 300.0, interval: float = 2.0) -> bool:
+        """Wait for the server to be ready, then pull the required model."""
+        logger.info(f"⏳ Waiting for Ollama server to be ready on port {self.config.port}")
+        deadline = asyncio.get_event_loop().time() + timeout
+        server_ready = False
+        
+        async with httpx.AsyncClient() as client:
+            while asyncio.get_event_loop().time() < deadline:
+                try:
+                    # Ollama root endpoint answers 200 OK when ready
+                    resp = await client.get(f"{self.config.base_url}/")
+                    if resp.status_code == 200:
+                        server_ready = True
+                        break
+                except httpx.HTTPError:
+                    pass
+                await asyncio.sleep(interval)
+                
+        if not server_ready:
+            logger.error("❌ Ollama server did not become ready")
+            return False
+            
+        # The server is up. Now pull the model.
+        logger.info(f"✅ Ollama server ready. Pulling model '{self.config.model}'...")
+        pull_process = await asyncio.create_subprocess_exec(
+            "ollama", "pull", self.config.model,
+            env=self.build_env(),
+            stdout=self._log_file if self._log_file else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT
+        )
+        await pull_process.wait()
+        
+        if pull_process.returncode != 0:
+            logger.error(f"❌ Failed to pull Ollama model {self.config.model}")
+            return False
+            
+        logger.info(f"✅ Ollama model '{self.config.model}' pulled successfully.")
+        return True
+
+    def lora_load_endpoint(self) -> str:
+        raise NotImplementedError("Ollama does not support runtime LoRA hot-swapping.")
+
+    def lora_load_payload(self, name: str, path: str) -> dict[str, Any]:
+        return {}
+
+    def lora_unload_endpoint(self) -> str:
+        raise NotImplementedError("Ollama does not support runtime LoRA hot-swapping.")
+
+    def lora_unload_payload(self, name: str) -> dict[str, Any]:
+        return {}
+
+
 ADAPTERS: dict[str, type[BackendAdapter]] = {
     "vllm": VLLMAdapter,
     "sglang": SGLangAdapter,
+    "ollama": OllamaAdapter,
 }
 
 

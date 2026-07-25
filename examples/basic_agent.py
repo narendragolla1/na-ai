@@ -16,8 +16,8 @@ def get_weather(city: str) -> str:
     return f"22C and sunny in {city}"
 
 # 1. Engine: vLLM backend with fp8 quantization (start() launches the server).
-engine = ModelEngine.create({"model": "Qwen/Qwen2.5-7B-Instruct", "backend": "vllm",
-                             "quantization": "fp8", "tensor_parallel_size": 1})
+engine = ModelEngine.create({"model": "Qwen/Qwen2.5-1.5B-Instruct", "backend": "vllm",
+                             "tensor_parallel_size": 1})
 
 # 2. Skills: parsed from skill.md files and pre-cached into the system prompt.
 loader = SkillLoader()

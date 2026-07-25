@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class Backend(StrEnum):
     VLLM = "vllm"
     SGLANG = "sglang"
+    OLLAMA = "ollama"
 
 
 class EngineConfig(BaseModel):
