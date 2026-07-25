@@ -72,7 +72,7 @@ class InteractionBuffer:
                         async with engine.begin() as conn:
                             await conn.run_sync(SQLModel.metadata.create_all)
                         self._engine = engine
-                        logger.info(f"✅ Database connected and initialized")
+                        logger.info("✅ Database connected and initialized")
                     except Exception as exc:
                         logger.error(f"❌ Database connection failed: {type(exc).__name__}: {exc}")
                         raise DatabaseError(
@@ -121,15 +121,16 @@ class InteractionBuffer:
 
     async def log(self, message: OmniMessage) -> None:
         """Persist a message; fires ``on_threshold`` when the bar is crossed."""
-        logger.debug(
-            f"💾 Logging interaction | id={message.id} | session={message.session_id} | role={message.role.value}"
-        )
+        msg_id = message.id
+        session_id = message.session_id
+        role = message.role.value
+        logger.debug(f"💾 Logging interaction | id={msg_id} | session={session_id} | role={role}")
         try:
             await self._ensure_ready()
             async with AsyncSession(self._engine) as session:
                 await session.merge(self._to_row(message))
                 await session.commit()
-            logger.debug(f"✅ Interaction logged | id={message.id}")
+            logger.debug(f"✅ Interaction logged | id={msg_id}")
         except Exception as exc:
             logger.error(f"❌ Failed to log interaction: {type(exc).__name__}: {exc}")
             raise
@@ -139,15 +140,15 @@ class InteractionBuffer:
             return
 
         if self._approx_count - (self._threshold_fired_at or 0) >= self.threshold:
-            logger.info(
-                f"🎯 Interaction threshold reached | threshold={self.threshold} | count={self._approx_count}"
-            )
+            threshold = self.threshold
+            count = self._approx_count
+            logger.info(f"🎯 Interaction threshold reached | threshold={threshold} | count={count}")
             self._threshold_fired_at = self._approx_count
             try:
                 result = self.on_threshold()
                 if asyncio.iscoroutine(result):
                     await result
-                logger.info(f"✅ Threshold callback completed")
+                logger.info("✅ Threshold callback completed")
             except Exception as exc:
                 logger.error(f"❌ Threshold callback failed: {type(exc).__name__}: {exc}")
                 raise
@@ -173,9 +174,8 @@ class InteractionBuffer:
         ``since`` filters to rows created strictly after the given (naive
         UTC) timestamp — the incremental-training high-water mark.
         """
-        logger.debug(
-            f"🔍 Fetching interactions | session={session_id} | limit={limit} | since={since is not None}"
-        )
+        logger.debug(f"🔍 Fetching interactions | session={session_id} | limit={limit} | "
+                     f"since={since is not None}")
         try:
             await self._ensure_ready()
             query = select(Interaction)

@@ -3,13 +3,11 @@
 import pytest
 
 from omniai.gateway.adapters import (
-    ChannelAdapter,
     DiscordAdapter,
     RestAdapter,
     WebSocketAdapter,
 )
 from omniai.protocol import Channel, OmniMessage, Role
-
 
 # -- RestAdapter Tests ---------------------------------------------------
 

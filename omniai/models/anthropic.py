@@ -174,11 +174,14 @@ class AnthropicChatModel(ChatModel):
                         )
                     )
             usage = data.get("usage") or {}
+            stop_reason = data.get("stop_reason")
+            input_tokens = usage.get("input_tokens", 0)
+            output_tokens = usage.get("output_tokens", 0)
+            tool_calls_count = len(tool_calls)
 
             logger.debug(
-                f"✅ Anthropic response | model={model} | stop_reason={data.get('stop_reason')} | "
-                f"input_tokens={usage.get('input_tokens', 0)} | output_tokens={usage.get('output_tokens', 0)} | "
-                f"tool_calls={len(tool_calls)}"
+                f"✅ Anthropic | model={model} | reason={stop_reason} | "
+                f"in={input_tokens} | out={output_tokens} | tools={tool_calls_count}"
             )
 
             return ChatResult(

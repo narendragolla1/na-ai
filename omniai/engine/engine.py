@@ -66,7 +66,9 @@ class ModelEngine:
         if isinstance(config, dict):
             config = EngineConfig(**config)
 
-        logger.info(f"🔧 Creating ModelEngine | backend={config.backend_name} | model={config.model}")
+        logger.info(
+            f"🔧 Creating ModelEngine | backend={config.backend_name} | model={config.model}"
+        )
 
         adapter_cls = ADAPTERS.get(config.backend_name)
         if adapter_cls is None:
@@ -78,7 +80,7 @@ class ModelEngine:
             logger.error(str(error))
             raise ValueError(str(error))
 
-        logger.debug(f"✅ ModelEngine created successfully")
+        logger.debug("✅ ModelEngine created successfully")
         return cls(config, adapter_cls(config), **kwargs)
 
     @property
@@ -114,7 +116,9 @@ class ModelEngine:
         ``config.external_base_url`` and only health-checks it.
         """
         mode = "unmanaged (external)" if not self.config.managed else "managed (local)"
-        with trace_operation(logger, f"Starting engine ({mode})", {"timeout": f"{timeout}s", "supervise": supervise}):
+        with trace_operation(
+            logger, f"Starting engine ({mode})", {"timeout": f"{timeout}s", "supervise": supervise}
+        ):
             if not self.config.managed:
                 logger.info(f"📍 Connecting to external engine at {self.config.base_url}")
                 if wait and not await self.adapter.wait_ready(timeout=timeout):
@@ -128,10 +132,13 @@ class ModelEngine:
                 logger.info(f"✅ Connected to external engine at {self.config.base_url}")
                 return
 
-            logger.info(f"🚀 Spawning {self.config.backend_name} backend process on port {self.config.port}")
+            logger.info(
+                f"🚀 Spawning {self.config.backend_name} backend process on port {self.config.port}"
+            )
             try:
                 self.adapter.start()
-                logger.debug(f"📊 Backend process spawned (PID: {self.adapter.process.pid if self.adapter.process else 'unknown'})")
+                pid = self.adapter.process.pid if self.adapter.process else "unknown"
+                logger.debug(f"📊 Backend process spawned (PID: {pid})")
             except Exception as exc:
                 error = EngineError(
                     ErrorMessages.PROCESS_SPAWN_FAILED,
@@ -148,18 +155,20 @@ class ModelEngine:
                     self.adapter.stop()
                     error = EngineError(
                         ErrorMessages.ENGINE_TIMEOUT.format(timeout=timeout),
-                        context=f"{self.config.backend_name} server failed to respond to health checks",
+                        context=f"{self.config.backend_name} server failed to respond to "
+                        "health checks",
                         suggestion=Suggestions.CHECK_GPU,
                     )
                     logger.error(str(error))
                     raise EngineUnavailable(str(error)) from None
-                logger.info(f"✅ Backend is ready and responsive")
+                logger.info("✅ Backend is ready and responsive")
 
             if supervise:
-                logger.info(f"👁️  Starting process supervisor (max_restarts: {self.config.supervisor_max_restarts})")
-                self.supervisor = EngineSupervisor(self, max_restarts=self.config.supervisor_max_restarts)
+                max_restarts = self.config.supervisor_max_restarts
+                logger.info(f"👁️  Starting process supervisor (max_restarts: {max_restarts})")
+                self.supervisor = EngineSupervisor(self, max_restarts=max_restarts)
                 self.supervisor.start()
-                logger.debug(f"✅ Supervisor started")
+                logger.debug("✅ Supervisor started")
 
     async def stop(self) -> None:
         """Stop the engine and clean up resources."""

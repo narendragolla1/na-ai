@@ -1,6 +1,5 @@
 """Tests for backend adapter process lifecycle management."""
 
-import asyncio
 import os
 import signal
 import subprocess
@@ -10,9 +9,8 @@ from unittest import mock
 
 import pytest
 
-from omniai.engine.backends import BackendAdapter, VLLMAdapter, SGLangAdapter
+from omniai.engine.backends import SGLangAdapter, VLLMAdapter
 from omniai.engine.config import EngineConfig
-
 
 # -- Test fixtures ----------------------------------------------------------
 
@@ -244,7 +242,7 @@ def test_open_log_file_handle_stored():
     with tempfile.TemporaryDirectory() as tmpdir:
         config = create_test_config(log_dir=tmpdir)
         adapter = VLLMAdapter(config)
-        sink = adapter._open_log()
+        adapter._open_log()
         assert adapter._log_file is not None
         assert not adapter._log_file.closed
         adapter._log_file.close()
@@ -515,7 +513,7 @@ def test_stop_closes_log_file():
     with tempfile.TemporaryDirectory() as tmpdir:
         config = create_test_config(log_dir=tmpdir)
         adapter = VLLMAdapter(config)
-        sink = adapter._open_log()
+        adapter._open_log()
 
         assert adapter._log_file is not None
         assert not adapter._log_file.closed

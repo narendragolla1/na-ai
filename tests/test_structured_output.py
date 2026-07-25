@@ -1,17 +1,15 @@
 """Comprehensive tests for StructuredOutput retry logic and validation."""
 
-import json
 from unittest import mock
 
 import pytest
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from omniai.models.structured import (
     StructuredOutput,
     StructuredOutputError,
     _extract_json,
 )
-
 
 # -- Test Models ---------------------------------------------------
 
@@ -88,14 +86,14 @@ class TestJsonExtraction:
 
     def test_extract_json_no_json(self):
         """Verify extraction when no JSON present."""
-        text = 'No JSON here, just text'
+        text = "No JSON here, just text"
         result = _extract_json(text)
-        assert result == 'No JSON here, just text'
+        assert result == "No JSON here, just text"
 
     def test_extract_json_empty_string(self):
         """Verify extraction from empty string."""
-        result = _extract_json('')
-        assert result == ''
+        result = _extract_json("")
+        assert result == ""
 
     def test_extract_json_multiple_objects(self):
         """Verify extraction takes first to last brace."""
@@ -103,13 +101,13 @@ class TestJsonExtraction:
         result = _extract_json(text)
         # Should extract from first { to last }
         assert result.startswith('{"name"')
-        assert result.endswith('}')
+        assert result.endswith("}")
 
     def test_extract_json_with_escaped_quotes(self):
         """Verify extraction handles escaped quotes."""
         text = '{"name": "Alice \\"Developer\\"", "age": 30}'
         result = _extract_json(text)
-        assert 'Alice' in result and 'Developer' in result
+        assert "Alice" in result and "Developer" in result
 
     def test_extract_json_with_whitespace(self):
         """Verify extraction handles leading/trailing whitespace."""
@@ -178,7 +176,7 @@ class TestStructuredOutputSuccess:
         mock_model.generate.return_value = mock_response
 
         structured = StructuredOutput(mock_model, Person)
-        result = await structured.invoke("Who is Bob?")
+        await structured.invoke("Who is Bob?")
 
         # Check that model.generate was called with proper message structure
         call_args = mock_model.generate.call_args
@@ -234,7 +232,7 @@ class TestStructuredOutputSuccess:
         mock_model.generate.return_value = mock_response
 
         structured = StructuredOutput(mock_model, Person)
-        result = await structured.invoke("test", temperature=0.5, max_tokens=100)
+        await structured.invoke("test", temperature=0.5, max_tokens=100)
 
         call_kwargs = mock_model.generate.call_args[1]
         assert call_kwargs["temperature"] == 0.5

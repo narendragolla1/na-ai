@@ -9,7 +9,7 @@ from __future__ import annotations
 import abc
 from typing import Any
 
-from omniai.logging import ValidationError, get_logger
+from omniai.logging import get_logger
 from omniai.protocol import Channel, OmniMessage, Role
 
 logger = get_logger(__name__)
@@ -38,10 +38,11 @@ class RestAdapter(ChannelAdapter):
         content = payload.get("content", "")
         session_id = payload.get("session_id", "default")
         metadata = payload.get("metadata", {})
+        metadata_keys = list(metadata.keys())
 
         logger.debug(
             f"📬 Converting REST payload to OmniMessage | "
-            f"session={session_id} | content_len={len(content)} | metadata_keys={list(metadata.keys())}"
+            f"session={session_id} | content_len={len(content)} | metadata_keys={metadata_keys}"
         )
 
         try:
@@ -72,7 +73,7 @@ class RestAdapter(ChannelAdapter):
                 "content": message.content,
                 "metadata": message.metadata,
             }
-            logger.debug(f"✅ Converted to REST payload")
+            logger.debug("✅ Converted to REST payload")
             return response
         except Exception as exc:
             logger.error(f"❌ Failed to convert to REST: {type(exc).__name__}: {exc}")
@@ -130,13 +131,14 @@ class DiscordAdapter(ChannelAdapter):
         )
 
         if truncated:
+            max_len = self.MAX_CONTENT_LENGTH
             logger.warning(
-                f"⚠️  Discord content truncated | original_len={content_len} | max={self.MAX_CONTENT_LENGTH}"
+                f"⚠️  Discord content truncated | original_len={content_len} | max={max_len}"
             )
 
         try:
-            response = {"content": message.content[:self.MAX_CONTENT_LENGTH]}
-            logger.debug(f"✅ Converted to Discord payload")
+            response = {"content": message.content[: self.MAX_CONTENT_LENGTH]}
+            logger.debug("✅ Converted to Discord payload")
             return response
         except Exception as exc:
             logger.error(f"❌ Failed to convert to Discord: {type(exc).__name__}: {exc}")

@@ -4,8 +4,7 @@ from unittest import mock
 
 import pytest
 
-from omniai.telemetry import SpanRecord, TelemetryRecorder, traced_span, recorder
-
+from omniai.telemetry import SpanRecord, TelemetryRecorder, recorder, traced_span
 
 # -- SpanRecord tests -------------------------------------------------------
 
@@ -297,9 +296,7 @@ def test_traced_span_otel_integration_when_available():
         pytest.skip("OpenTelemetry not installed")
 
     recorder.clear()
-    with mock.patch.object(
-        tel_module._TRACER, "start_as_current_span"
-    ) as mock_start:
+    with mock.patch.object(tel_module._TRACER, "start_as_current_span") as mock_start:
         mock_span = mock.MagicMock()
         mock_start.return_value.__enter__.return_value = mock_span
 
@@ -336,9 +333,7 @@ def test_traced_span_otel_attribute_error_suppression():
         pytest.skip("OpenTelemetry not installed")
 
     recorder.clear()
-    with mock.patch.object(
-        tel_module._TRACER, "start_as_current_span"
-    ) as mock_start:
+    with mock.patch.object(tel_module._TRACER, "start_as_current_span") as mock_start:
         mock_span = mock.MagicMock()
         mock_span.set_attribute.side_effect = RuntimeError("OTel error")
         mock_start.return_value.__enter__.return_value = mock_span
@@ -436,16 +431,19 @@ def test_traced_span_large_attributes():
 def test_traced_span_various_attribute_types():
     """Verify various Python types can be stored as attributes."""
     recorder.clear()
-    with traced_span("op", attributes={
-        "int": 42,
-        "float": 3.14,
-        "str": "text",
-        "bool": True,
-        "none": None,
-        "list": [1, 2, 3],
-        "dict": {"nested": "value"},
-        "tuple": (1, 2),
-    }):
+    with traced_span(
+        "op",
+        attributes={
+            "int": 42,
+            "float": 3.14,
+            "str": "text",
+            "bool": True,
+            "none": None,
+            "list": [1, 2, 3],
+            "dict": {"nested": "value"},
+            "tuple": (1, 2),
+        },
+    ):
         pass
 
     attrs = recorder.spans[0].attributes
