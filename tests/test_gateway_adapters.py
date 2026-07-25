@@ -3,13 +3,11 @@
 import pytest
 
 from omniai.gateway.adapters import (
-    ChannelAdapter,
     DiscordAdapter,
     RestAdapter,
     WebSocketAdapter,
 )
 from omniai.protocol import Channel, OmniMessage, Role
-
 
 # -- RestAdapter Tests ---------------------------------------------------
 
@@ -350,8 +348,8 @@ class TestDiscordAdapter:
 
     def test_from_omni_truncates_unicode_safely(self):
         """Verify from_omni truncates unicode content safely."""
-        # Mix of ASCII and emoji
-        content = ("Hello " * 300) + "🚀" * 100  # Will exceed 2000 when combined
+        # Mix of ASCII and emoji: 300*6 + 300 = 2100 chars, exceeds the 2000 limit
+        content = ("Hello " * 300) + "🚀" * 300
         message = OmniMessage(content=content, session_id="s1")
         payload = self.adapter.from_omni(message)
         assert len(payload["content"]) == 2000

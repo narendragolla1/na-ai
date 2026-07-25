@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import logging
 import time
-import traceback
+from collections.abc import Callable
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -114,9 +114,7 @@ class ValidationError(OmniAIError):
 
 
 @contextmanager
-def trace_operation(
-    logger: logging.Logger, operation: str, context: dict[str, Any] | None = None
-):
+def trace_operation(logger: logging.Logger, operation: str, context: dict[str, Any] | None = None):
     """Context manager for tracing operations with timing."""
     context_str = " | ".join(f"{k}={v}" for k, v in (context or {}).items())
     full_msg = f"{operation}" + (f" [{context_str}]" if context_str else "")
@@ -145,14 +143,16 @@ def trace_performance(logger: logging.Logger, operation: str, threshold_ms: floa
         duration_ms = (time.time() - start_time) * 1000
         if duration_ms > threshold_ms:
             logger.warning(
-                f"⚠️  Slow operation: {operation} took {duration_ms:.1f}ms (threshold: {threshold_ms}ms)"
+                f"⚠️  Slow operation: {operation} took {duration_ms:.1f}ms "
+                f"(threshold: {threshold_ms}ms)"
             )
         else:
             logger.debug(f"⏱️  {operation} completed in {duration_ms:.1f}ms")
     except Exception as exc:
         duration_ms = (time.time() - start_time) * 1000
         logger.error(
-            f"❌ Operation failed: {operation} after {duration_ms:.1f}ms - {type(exc).__name__}: {exc}"
+            f"❌ Operation failed: {operation} after {duration_ms:.1f}ms - "
+            f"{type(exc).__name__}: {exc}"
         )
         raise
 
@@ -172,8 +172,8 @@ def log_operation(logger: logging.Logger | None = None):
         async def async_wrapper(*args, **kwargs):
             func_name = func.__qualname__
             arg_str = ", ".join(
-                [repr(a)[:50] for a in args[1:]] +  # Skip self
-                [f"{k}={repr(v)[:50]}" for k, v in kwargs.items()]
+                [repr(a)[:50] for a in args[1:]]  # Skip self
+                + [f"{k}={repr(v)[:50]}" for k, v in kwargs.items()]
             )
             logger.debug(f"📞 Calling {func_name}({arg_str})")
 
@@ -189,8 +189,8 @@ def log_operation(logger: logging.Logger | None = None):
         def sync_wrapper(*args, **kwargs):
             func_name = func.__qualname__
             arg_str = ", ".join(
-                [repr(a)[:50] for a in args[1:]] +  # Skip self
-                [f"{k}={repr(v)[:50]}" for k, v in kwargs.items()]
+                [repr(a)[:50] for a in args[1:]]  # Skip self
+                + [f"{k}={repr(v)[:50]}" for k, v in kwargs.items()]
             )
             logger.debug(f"📞 Calling {func_name}({arg_str})")
 
@@ -426,4 +426,7 @@ def log_performance_metric(
 ) -> None:
     """Log a performance metric."""
     status = "✅" if threshold is None or value <= threshold else "⚠️"
-    logger.info(f"{status} {metric}: {value:.2f}{unit}" + (f" (threshold: {threshold}{unit})" if threshold else ""))
+    logger.info(
+        f"{status} {metric}: {value:.2f}{unit}"
+        + (f" (threshold: {threshold}{unit})" if threshold else "")
+    )

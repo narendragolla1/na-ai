@@ -301,6 +301,7 @@ async def test_supervisor_ignores_healthy_process():
 
 async def test_supervisor_process_alive_checks():
     """Verify _process_alive correctly detects process state."""
+
     class FakeAdapter:
         def __init__(self):
             self.process = FakeProcess(alive=True)
@@ -329,6 +330,7 @@ async def test_supervisor_process_alive_checks():
 
 async def test_supervisor_tracks_restart_count():
     """Verify supervisor increments restart counter."""
+
     class CountingAdapter:
         def __init__(self):
             self.process = FakeProcess(alive=False)
@@ -362,6 +364,7 @@ async def test_supervisor_tracks_restart_count():
 
 async def test_supervisor_enforces_max_restarts_limit():
     """Verify supervisor fails when max_restarts is exceeded."""
+
     class FakeAdapter:
         def __init__(self):
             self.process = FakeProcess(alive=False)  # always dead
@@ -392,6 +395,7 @@ async def test_supervisor_enforces_max_restarts_limit():
 
 async def test_supervisor_without_active_lora():
     """Verify supervisor handles case where no LoRA is active."""
+
     class FakeAdapter:
         def __init__(self):
             self.process = FakeProcess(alive=False)
@@ -426,6 +430,7 @@ async def test_supervisor_without_active_lora():
 
 async def test_supervisor_wait_ready_timeout():
     """Verify supervisor retries when wait_ready times out."""
+
     class SlowAdapter:
         def __init__(self):
             self.process = FakeProcess(alive=False)
@@ -459,6 +464,7 @@ async def test_supervisor_wait_ready_timeout():
 
 async def test_supervisor_graceful_stop_cancels_watch():
     """Verify supervisor.stop() cancels the watch task."""
+
     class FakeAdapter:
         def __init__(self):
             self.process = FakeProcess(alive=True)
@@ -483,6 +489,7 @@ async def test_supervisor_graceful_stop_cancels_watch():
 
 async def test_supervisor_multiple_restarts_with_backoff():
     """Verify supervisor applies backoff between restarts."""
+
     class FakeAdapter:
         def __init__(self):
             self.process = FakeProcess(alive=False)
@@ -520,6 +527,7 @@ async def test_supervisor_multiple_restarts_with_backoff():
 
 async def test_supervisor_start_is_idempotent():
     """Verify calling start() multiple times doesn't create multiple tasks."""
+
     class FakeAdapter:
         process = FakeProcess(alive=True)
 
@@ -541,6 +549,7 @@ async def test_supervisor_start_is_idempotent():
 
 async def test_supervisor_stop_without_start():
     """Verify supervisor.stop() is safe to call without start()."""
+
     class FakeAdapter:
         process = FakeProcess(alive=True)
 
@@ -557,6 +566,7 @@ async def test_supervisor_stop_without_start():
 
 async def test_supervisor_exception_in_restart_sets_failed():
     """Verify supervisor sets failed flag when restart fails."""
+
     class FakeAdapter:
         def __init__(self):
             self.process = FakeProcess(alive=False)
@@ -622,6 +632,7 @@ async def test_supervisor_lora_reapply_called_after_restart():
 
 async def test_supervisor_stopped_event_signal():
     """Verify supervisor respects _stopped event."""
+
     class FakeAdapter:
         def __init__(self):
             self.process = FakeProcess(alive=True)

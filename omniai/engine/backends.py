@@ -136,7 +136,7 @@ class BackendAdapter(abc.ABC):
                 self.process.send_signal(sig)
             logger.debug(f"📍 Sent signal {sig.name} to process group")
         except ProcessLookupError:
-            logger.debug(f"⚠️  Process already terminated")
+            logger.debug("⚠️  Process already terminated")
 
     def stop(self) -> None:
         logger.info("🛑 Stopping backend process")
@@ -169,7 +169,9 @@ class BackendAdapter(abc.ABC):
 
     async def wait_ready(self, timeout: float = 300.0, interval: float = 2.0) -> bool:
         """Poll the health endpoint until the server answers or timeout."""
-        logger.info(f"⏳ Waiting for backend to be ready | timeout={timeout}s | interval={interval}s")
+        logger.info(
+            f"⏳ Waiting for backend to be ready | timeout={timeout}s | interval={interval}s"
+        )
         deadline = asyncio.get_event_loop().time() + timeout
         attempt = 0
         async with httpx.AsyncClient() as client:
@@ -200,7 +202,9 @@ class VLLMAdapter(BackendAdapter):
 
     def build_command(self) -> list[str]:
         cfg = self.config
-        logger.debug(f"🔧 Building vLLM command | model={cfg.model} | quantization={cfg.quantization}")
+        logger.debug(
+            f"🔧 Building vLLM command | model={cfg.model} | quantization={cfg.quantization}"
+        )
         cmd = [
             "vllm",
             "serve",

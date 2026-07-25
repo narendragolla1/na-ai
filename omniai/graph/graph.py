@@ -89,11 +89,15 @@ class Graph:
             raise GraphError(f"Node {source!r} already has a static edge")
         self.conditional_edges[source] = (router, path_map)
         logger.debug(
-            f"⚡ Conditional edge added | source={source} | path_map_size={len(path_map) if path_map else 0}"
+            f"⚡ Conditional edge added | source={source} | "
+            f"path_map_size={len(path_map) if path_map else 0}"
         )
 
     def compile(self, max_iterations: int = 25) -> CompiledGraph:
-        logger.info(f"🔨 Compiling graph | nodes={len(self.nodes)} | edges={len(self.edges)} | conditional={len(self.conditional_edges)}")
+        logger.info(
+            f"🔨 Compiling graph | nodes={len(self.nodes)} | edges={len(self.edges)} | "
+            f"conditional={len(self.conditional_edges)}"
+        )
 
         if self.entry_point is None:
             logger.error("❌ Graph compilation failed: No entry point set")
@@ -120,7 +124,9 @@ class CompiledGraph:
     def __init__(self, graph: Graph, max_iterations: int = 25):
         self.graph = graph
         self.max_iterations = max_iterations
-        logger.debug(f"🔨 CompiledGraph created | nodes={len(graph.nodes)} | max_iterations={max_iterations}")
+        logger.debug(
+            f"🔨 CompiledGraph created | nodes={len(graph.nodes)} | max_iterations={max_iterations}"
+        )
 
     async def _run_node(self, name: str, state: State) -> State:
         fn = self.graph.nodes[name]
@@ -145,13 +151,19 @@ class CompiledGraph:
                 target = router(state)
                 if path_map is not None:
                     if target not in path_map:
-                        logger.error(f"❌ Router returned unknown path | node={current} | path={target}")
-                        raise GraphError(f"Router at {current!r} returned {target!r}, not in path map")
+                        logger.error(
+                            f"❌ Router returned unknown path | node={current} | path={target}"
+                        )
+                        raise GraphError(
+                            f"Router at {current!r} returned {target!r}, not in path map"
+                        )
                     target = path_map[target]
                 logger.debug(f"➡️  Routed to | target={target}")
                 return target
             except Exception as exc:
-                logger.error(f"❌ Routing failed | node={current} | error={type(exc).__name__}: {exc}")
+                logger.error(
+                    f"❌ Routing failed | node={current} | error={type(exc).__name__}: {exc}"
+                )
                 raise
         target = self.graph.edges.get(current, END)
         logger.debug(f"➡️  Next node | current={current} | target={target}")
@@ -163,14 +175,20 @@ class CompiledGraph:
             state = self.graph.state_type.model_validate(state)
         assert isinstance(state, State)
 
-        logger.info(f"🚀 Graph execution started | entry_point={self.graph.entry_point} | state_messages={len(state.messages)}")
+        logger.info(
+            f"🚀 Graph execution started | entry_point={self.graph.entry_point} | "
+            f"state_messages={len(state.messages)}"
+        )
         current = self.graph.entry_point
         iteration = 0
 
         try:
             for iteration in range(self.max_iterations):
                 if current == END:
-                    logger.info(f"✅ Graph execution completed | iterations={iteration} | messages={len(state.messages)}")
+                    logger.info(
+                        f"✅ Graph execution completed | iterations={iteration} | "
+                        f"messages={len(state.messages)}"
+                    )
                     return state
                 if current not in self.graph.nodes:
                     logger.error(f"❌ Unknown node: {current}")
@@ -179,14 +197,20 @@ class CompiledGraph:
                 current = self._next(current, state)
 
             if current == END:
-                logger.info(f"✅ Graph execution completed | iterations={self.max_iterations} | messages={len(state.messages)}")
+                logger.info(
+                    f"✅ Graph execution completed | iterations={self.max_iterations} | "
+                    f"messages={len(state.messages)}"
+                )
                 return state
             logger.error(f"❌ Graph exceeded max iterations | stuck_at={current}")
             raise GraphError(
                 f"Graph exceeded max_iterations={self.max_iterations} (stuck at {current!r})"
             )
         except Exception as exc:
-            logger.error(f"❌ Graph execution failed after {iteration} iterations: {type(exc).__name__}: {exc}")
+            logger.error(
+                f"❌ Graph execution failed after {iteration} iterations: "
+                f"{type(exc).__name__}: {exc}"
+            )
             raise
 
     def invoke(self, state: State | dict[str, Any]) -> State:
@@ -204,7 +228,10 @@ class CompiledGraph:
         from omniai.protocol import OmniMessage
 
         async def handler(message: OmniMessage) -> OmniMessage:
-            logger.debug(f"📬 Handler invoked | session={message.session_id} | content_len={len(message.content)}")
+            logger.debug(
+                f"📬 Handler invoked | session={message.session_id} | "
+                f"content_len={len(message.content)}"
+            )
             try:
                 final = await self.ainvoke(self.graph.state_type(messages=[message]))
                 if not final.messages:
@@ -213,7 +240,10 @@ class CompiledGraph:
                 last = final.messages[-1]
                 reply = message.reply(last.content)
                 reply.tool_calls = last.tool_calls
-                logger.debug(f"✅ Handler returned reply | reply_len={len(reply.content)} | tool_calls={len(reply.tool_calls)}")
+                logger.debug(
+                    f"✅ Handler returned reply | reply_len={len(reply.content)} | "
+                    f"tool_calls={len(reply.tool_calls)}"
+                )
                 return reply
             except Exception as exc:
                 logger.error(f"❌ Handler failed: {type(exc).__name__}: {exc}")

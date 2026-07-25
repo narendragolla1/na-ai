@@ -38,7 +38,10 @@ class OpenAIChatModel(ChatModel):
         )
         # Injected clients (tests, custom transports) still get auth headers.
         self.client.headers.update(headers)
-        logger.info(f"🔧 OpenAI ChatModel initialized | model={model} | base_url={base_url} | retries={retries}")
+        logger.info(
+            f"🔧 OpenAI ChatModel initialized | model={model} | base_url={base_url} | "
+            f"retries={retries}"
+        )
 
     async def generate(
         self,
@@ -57,7 +60,8 @@ class OpenAIChatModel(ChatModel):
             payload["tools"] = [t.to_openai() for t in tools]
 
         logger.debug(
-            f"📤 OpenAI API request | model={model} | messages={len(messages)} | tools={len(tools) if tools else 0}"
+            f"📤 OpenAI API request | model={model} | messages={len(messages)} | "
+            f"tools={len(tools) if tools else 0}"
         )
 
         async def attempt() -> httpx.Response:
@@ -77,7 +81,8 @@ class OpenAIChatModel(ChatModel):
 
             logger.debug(
                 f"✅ OpenAI response | model={model} | stop_reason={stop_reason} | "
-                f"prompt_tokens={usage.get('prompt_tokens', 0)} | completion_tokens={usage.get('completion_tokens', 0)} | "
+                f"prompt_tokens={usage.get('prompt_tokens', 0)} | "
+                f"completion_tokens={usage.get('completion_tokens', 0)} | "
                 f"tool_calls={len(tool_calls)}"
             )
 

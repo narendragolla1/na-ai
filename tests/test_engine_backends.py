@@ -1,6 +1,5 @@
 """Tests for backend adapter process lifecycle management."""
 
-import asyncio
 import os
 import signal
 import subprocess
@@ -8,11 +7,11 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+import httpx
 import pytest
 
-from omniai.engine.backends import BackendAdapter, VLLMAdapter, SGLangAdapter
+from omniai.engine.backends import SGLangAdapter, VLLMAdapter
 from omniai.engine.config import EngineConfig
-
 
 # -- Test fixtures ----------------------------------------------------------
 
@@ -85,8 +84,16 @@ def test_build_env_no_devices():
 
 
 def test_build_env_empty_devices():
-    """Verify CUDA_VISIBLE_DEVICES handles empty device list."""
-    config = create_test_config(devices=[])
+    """Verify CUDA_VISIBLE_DEVICES handles empty device list.
+
+    devices=[] can never satisfy the default tensor_parallel_size=1 (a
+    real config would be rejected by EngineConfig's own validator), so this
+    builds the model via model_construct to unit-test build_env()'s string
+    formatting in isolation from that cross-field check.
+    """
+    config = EngineConfig.model_construct(
+        model="meta-llama/Llama-2-7b", backend="vllm", devices=[], env={}
+    )
     adapter = VLLMAdapter(config)
     env = adapter.build_env()
     assert env["CUDA_VISIBLE_DEVICES"] == ""
@@ -244,7 +251,7 @@ def test_open_log_file_handle_stored():
     with tempfile.TemporaryDirectory() as tmpdir:
         config = create_test_config(log_dir=tmpdir)
         adapter = VLLMAdapter(config)
-        sink = adapter._open_log()
+        adapter._open_log()
         assert adapter._log_file is not None
         assert not adapter._log_file.closed
         adapter._log_file.close()
@@ -339,7 +346,7 @@ async def test_wait_ready_retries_on_error():
     async def failing_get(*args, **kwargs):
         call_count["n"] += 1
         if call_count["n"] < 2:
-            raise Exception("connection refused")
+            raise httpx.ConnectError("connection refused")
         return mock.MagicMock(status_code=200)
 
     with mock.patch("omniai.engine.backends.httpx.AsyncClient") as MockClient:
@@ -515,7 +522,7 @@ def test_stop_closes_log_file():
     with tempfile.TemporaryDirectory() as tmpdir:
         config = create_test_config(log_dir=tmpdir)
         adapter = VLLMAdapter(config)
-        sink = adapter._open_log()
+        adapter._open_log()
 
         assert adapter._log_file is not None
         assert not adapter._log_file.closed

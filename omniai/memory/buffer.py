@@ -25,10 +25,12 @@ from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from omniai.logging import DatabaseError, get_logger
-from omniai.memory.models import Interaction
+from omniai.memory.models import Interaction, TrainingState
 from omniai.protocol import OmniMessage
 
 logger = get_logger(__name__)
+
+_WATERMARK_KEY = "watermark"
 
 
 def _to_url(target: str | Path) -> str:
@@ -72,7 +74,7 @@ class InteractionBuffer:
                         async with engine.begin() as conn:
                             await conn.run_sync(SQLModel.metadata.create_all)
                         self._engine = engine
-                        logger.info(f"✅ Database connected and initialized")
+                        logger.info("✅ Database connected and initialized")
                     except Exception as exc:
                         logger.error(f"❌ Database connection failed: {type(exc).__name__}: {exc}")
                         raise DatabaseError(
@@ -122,7 +124,8 @@ class InteractionBuffer:
     async def log(self, message: OmniMessage) -> None:
         """Persist a message; fires ``on_threshold`` when the bar is crossed."""
         logger.debug(
-            f"💾 Logging interaction | id={message.id} | session={message.session_id} | role={message.role.value}"
+            f"💾 Logging interaction | id={message.id} | session={message.session_id} | "
+            f"role={message.role.value}"
         )
         try:
             await self._ensure_ready()
@@ -140,14 +143,15 @@ class InteractionBuffer:
 
         if self._approx_count - (self._threshold_fired_at or 0) >= self.threshold:
             logger.info(
-                f"🎯 Interaction threshold reached | threshold={self.threshold} | count={self._approx_count}"
+                f"🎯 Interaction threshold reached | threshold={self.threshold} | "
+                f"count={self._approx_count}"
             )
             self._threshold_fired_at = self._approx_count
             try:
                 result = self.on_threshold()
                 if asyncio.iscoroutine(result):
                     await result
-                logger.info(f"✅ Threshold callback completed")
+                logger.info("✅ Threshold callback completed")
             except Exception as exc:
                 logger.error(f"❌ Threshold callback failed: {type(exc).__name__}: {exc}")
                 raise
@@ -174,7 +178,8 @@ class InteractionBuffer:
         UTC) timestamp — the incremental-training high-water mark.
         """
         logger.debug(
-            f"🔍 Fetching interactions | session={session_id} | limit={limit} | since={since is not None}"
+            f"🔍 Fetching interactions | session={session_id} | limit={limit} | "
+            f"since={since is not None}"
         )
         try:
             await self._ensure_ready()
@@ -185,7 +190,10 @@ class InteractionBuffer:
                 if since.tzinfo is not None:
                     since = since.astimezone(UTC).replace(tzinfo=None)
                 query = query.where(Interaction.created_at > since)
-            query = query.order_by(Interaction.created_at, Interaction.id)
+            # SQLModel types class-level field access as the field's Python type
+            # (datetime) rather than the SQLAlchemy column expression it actually
+            # is at runtime; order_by needs the latter.
+            query = query.order_by(Interaction.created_at, Interaction.id)  # type: ignore[arg-type]
             if limit is not None:
                 query = query.limit(limit)
             async with AsyncSession(self._engine) as session:
@@ -207,6 +215,29 @@ class InteractionBuffer:
         except Exception as exc:
             logger.error(f"❌ Failed to fetch interactions: {type(exc).__name__}: {exc}")
             raise
+
+    async def get_watermark(self) -> datetime | None:
+        """Timestamp of the last interaction consumed by a successful
+        training cycle; None before the first cycle."""
+        await self._ensure_ready()
+        async with AsyncSession(self._engine) as session:
+            row = await session.get(TrainingState, _WATERMARK_KEY)
+        return datetime.fromisoformat(row.value) if row is not None else None
+
+    async def set_watermark(self, timestamp: datetime) -> None:
+        """Advance the watermark; persisted in the same database so restarts
+        never re-train on already-consumed data."""
+        await self._ensure_ready()
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.astimezone(UTC).replace(tzinfo=None)
+        async with AsyncSession(self._engine) as session:
+            row = await session.get(TrainingState, _WATERMARK_KEY)
+            if row is None:
+                row = TrainingState(key=_WATERMARK_KEY, value=timestamp.isoformat())
+            else:
+                row.value = timestamp.isoformat()
+            session.add(row)
+            await session.commit()
 
     async def aclose(self) -> None:
         logger.info("🛑 Closing InteractionBuffer")

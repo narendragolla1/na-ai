@@ -65,6 +65,7 @@ def create_app(settings: OmniSettings | None = None) -> FastAPI:
                 "breaker_failure_threshold": settings.breaker_failure_threshold,
                 "breaker_reset_s": settings.breaker_reset_s,
                 "max_concurrent_requests": settings.engine_max_concurrency,
+                "supervisor_max_restarts": settings.supervisor_max_restarts,
             }
         )
         logger.info("✅ ModelEngine created")

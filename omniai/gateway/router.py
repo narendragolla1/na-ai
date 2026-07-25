@@ -111,10 +111,12 @@ class GatewayRouter:
         self.app.middleware("http")(request_id_middleware())
 
         if self.engine is not None:
-            self.engine.on_usage = lambda prompt, completion: (
-                metrics.tokens.labels("prompt").inc(prompt),
-                metrics.tokens.labels("completion").inc(completion),
-            )
+
+            def _record_usage(prompt: int, completion: int) -> None:
+                metrics.tokens.labels("prompt").inc(prompt)
+                metrics.tokens.labels("completion").inc(completion)
+
+            self.engine.on_usage = _record_usage
 
         @self.app.get("/metrics")
         async def metrics_endpoint() -> Any:
@@ -180,7 +182,9 @@ class GatewayRouter:
 
         @self.app.exception_handler(Exception)
         async def unhandled(request: Request, exc: Exception) -> JSONResponse:
-            logger.error(f"❌ Unhandled exception: {type(exc).__name__}: {exc} | path={request.url.path}")
+            logger.error(
+                f"❌ Unhandled exception: {type(exc).__name__}: {exc} | path={request.url.path}"
+            )
             return JSONResponse(
                 status_code=500,
                 content={"error": {"type": "internal_error", "detail": "internal server error"}},
@@ -220,8 +224,8 @@ class GatewayRouter:
     async def dispatch(self, message: OmniMessage) -> OmniMessage:
         """Run one message through interceptors, handler, and observers."""
         logger.debug(
-            f"📬 Dispatching message | channel={message.channel.value} | session={message.session_id} | "
-            f"content_len={len(message.content)}"
+            f"📬 Dispatching message | channel={message.channel.value} | "
+            f"session={message.session_id} | content_len={len(message.content)}"
         )
 
         with traced_span(
@@ -229,19 +233,21 @@ class GatewayRouter:
         ):
             try:
                 for i, interceptor in enumerate(self.interceptors):
-                    logger.debug(f"🔍 Running interceptor {i+1}/{len(self.interceptors)}")
+                    logger.debug(f"🔍 Running interceptor {i + 1}/{len(self.interceptors)}")
                     message = await self._call(interceptor, message)
 
                 logger.debug(f"📊 Notifying {len(self.observers)} inbound observers")
                 await self._notify(message)
 
-                logger.debug(f"📞 Calling handler")
+                logger.debug("📞 Calling handler")
                 reply = await self._call(self.handler, message)
 
                 logger.debug(f"📊 Notifying {len(self.observers)} outbound observers")
                 await self._notify(reply)
 
-                logger.debug(f"✅ Message dispatched successfully | reply_content_len={len(reply.content)}")
+                logger.debug(
+                    f"✅ Message dispatched successfully | reply_content_len={len(reply.content)}"
+                )
                 return reply
             except Exception as exc:
                 logger.error(f"❌ Dispatch failed: {type(exc).__name__}: {exc}")
@@ -273,12 +279,14 @@ class GatewayRouter:
 
         @app.post("/discord/webhook")
         async def discord_webhook(payload: dict[str, Any]) -> dict[str, Any]:
-            logger.debug(f"📬 Discord webhook received | author={payload.get('author', {}).get('username')}")
+            logger.debug(
+                f"📬 Discord webhook received | author={payload.get('author', {}).get('username')}"
+            )
             try:
                 message = self.discord.to_omni(payload)
                 reply = await self.dispatch(message)
                 response = self.discord.from_omni(reply)
-                logger.debug(f"✅ Discord response prepared")
+                logger.debug("✅ Discord response prepared")
                 return response
             except GuardrailViolation as exc:
                 logger.warning(f"⚠️  Discord guardrail violation: {exc.reason}")
@@ -289,20 +297,23 @@ class GatewayRouter:
 
         @app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket) -> None:
-            logger.info(f"🔌 WebSocket connection established")
+            logger.info("🔌 WebSocket connection established")
             await websocket.accept()
             try:
                 message_count = 0
                 while True:
                     payload = await websocket.receive_json()
                     message_count += 1
-                    logger.debug(f"📬 WebSocket message {message_count} received | payload_keys={list(payload.keys())}")
+                    logger.debug(
+                        f"📬 WebSocket message {message_count} received | "
+                        f"payload_keys={list(payload.keys())}"
+                    )
                     message = self.ws.to_omni(payload)
                     try:
                         reply = await self.dispatch(message)
                         response = self.ws.from_omni(reply)
                         await websocket.send_json(response)
-                        logger.debug(f"✅ WebSocket response sent")
+                        logger.debug("✅ WebSocket response sent")
                     except GuardrailViolation as exc:
                         logger.warning(f"⚠️  WebSocket guardrail violation: {exc.reason}")
                         await websocket.send_json({"error": exc.reason})

@@ -88,13 +88,17 @@ class PromptGuard:
             name: re.compile(pat) for name, pat in self.policy.injection_patterns.items()
         }
         self._pii = {name: re.compile(pat) for name, pat in self.policy.pii_patterns.items()}
-        logger.debug(f"✅ Compiled {len(self._injection)} injection patterns and {len(self._pii)} PII patterns")
+        logger.debug(
+            f"✅ Compiled {len(self._injection)} injection patterns and {len(self._pii)} PII patterns"
+        )
 
     def check(self, text: str) -> GuardrailResult:
         logger.debug(f"🔍 Checking content | length={len(text)}")
 
         injection_hits = [name for name, rx in self._injection.items() if rx.search(text)]
-        logger.debug(f"🔍 Injection patterns checked | matches={len(injection_hits)} | patterns={injection_hits}")
+        logger.debug(
+            f"🔍 Injection patterns checked | matches={len(injection_hits)} | patterns={injection_hits}"
+        )
 
         sanitized = text
         pii_hits = []

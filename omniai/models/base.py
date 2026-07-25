@@ -119,9 +119,13 @@ def parse_openai_tool_calls(message: dict[str, Any]) -> list[ToolCall]:
             try:
                 arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
             except json.JSONDecodeError:
-                logger.warning(f"⚠️  Failed to parse arguments for tool {fn.get('name')}, treating as unparsed")
+                logger.warning(
+                    f"⚠️  Failed to parse arguments for tool {fn.get('name')}, treating as unparsed"
+                )
                 arguments = {"__unparsed__": raw_args}
-            calls.append(ToolCall(id=tc.get("id", ""), name=fn.get("name", ""), arguments=arguments))
+            calls.append(
+                ToolCall(id=tc.get("id", ""), name=fn.get("name", ""), arguments=arguments)
+            )
         except Exception as exc:
             logger.error(f"❌ Failed to parse tool call {idx}: {type(exc).__name__}: {exc}")
             raise
