@@ -17,7 +17,10 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from omniai.logging import get_logger
 from omniai.protocol import OmniMessage, Role, ToolCall
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -60,48 +63,72 @@ class ChatModel(abc.ABC):
 
 def omni_to_openai(messages: list[OmniMessage]) -> list[dict[str, Any]]:
     """Convert OmniMessage history into the canonical chat wire format."""
+    logger.debug(f"🔄 Converting {len(messages)} OmniMessage(s) to OpenAI format")
+
     out: list[dict[str, Any]] = []
-    for message in messages:
-        if message.role is Role.TOOL:
-            out.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": message.metadata.get("tool_call_id", ""),
-                    "content": message.content,
-                }
-            )
-        elif message.role is Role.ASSISTANT and message.tool_calls:
-            out.append(
-                {
-                    "role": "assistant",
-                    "content": message.content or None,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments),
-                            },
-                        }
-                        for tc in message.tool_calls
-                    ],
-                }
-            )
-        else:
-            out.append({"role": message.role.value, "content": message.content})
+    tool_calls_count = 0
+    for idx, message in enumerate(messages):
+        try:
+            if message.role is Role.TOOL:
+                out.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": message.metadata.get("tool_call_id", ""),
+                        "content": message.content,
+                    }
+                )
+            elif message.role is Role.ASSISTANT and message.tool_calls:
+                tool_calls_count += len(message.tool_calls)
+                out.append(
+                    {
+                        "role": "assistant",
+                        "content": message.content or None,
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": json.dumps(tc.arguments),
+                                },
+                            }
+                            for tc in message.tool_calls
+                        ],
+                    }
+                )
+            else:
+                out.append({"role": message.role.value, "content": message.content})
+        except Exception as exc:
+            logger.error(f"❌ Failed to convert message {idx}: {type(exc).__name__}: {exc}")
+            raise
+
+    logger.debug(f"✅ Converted {len(out)} messages | tool_calls={tool_calls_count}")
     return out
 
 
 def parse_openai_tool_calls(message: dict[str, Any]) -> list[ToolCall]:
     """Parse OpenAI-format tool_calls into protocol ToolCall objects."""
+    raw_calls = message.get("tool_calls") or []
+    logger.debug(f"📞 Parsing {len(raw_calls)} OpenAI tool calls")
+
     calls: list[ToolCall] = []
-    for tc in message.get("tool_calls") or []:
-        fn = tc.get("function", {})
-        raw_args = fn.get("arguments") or "{}"
+    for idx, tc in enumerate(raw_calls):
         try:
-            arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-        except json.JSONDecodeError:
-            arguments = {"__unparsed__": raw_args}
-        calls.append(ToolCall(id=tc.get("id", ""), name=fn.get("name", ""), arguments=arguments))
+            fn = tc.get("function", {})
+            raw_args = fn.get("arguments") or "{}"
+            try:
+                arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except json.JSONDecodeError:
+                logger.warning(
+                    f"⚠️  Failed to parse arguments for tool {fn.get('name')}, treating as unparsed"
+                )
+                arguments = {"__unparsed__": raw_args}
+            calls.append(
+                ToolCall(id=tc.get("id", ""), name=fn.get("name", ""), arguments=arguments)
+            )
+        except Exception as exc:
+            logger.error(f"❌ Failed to parse tool call {idx}: {type(exc).__name__}: {exc}")
+            raise
+
+    logger.debug(f"✅ Parsed {len(calls)} tool calls | functions={[c.name for c in calls]}")
     return calls

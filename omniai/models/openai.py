@@ -12,7 +12,10 @@ import httpx
 
 from omniai.engine.resilience import with_retries
 from omniai.graph.tools import Tool
+from omniai.logging import ModelError, get_logger
 from omniai.models.base import ChatModel, ChatResult, parse_openai_tool_calls
+
+logger = get_logger(__name__)
 
 
 class OpenAIChatModel(ChatModel):
@@ -35,6 +38,10 @@ class OpenAIChatModel(ChatModel):
         )
         # Injected clients (tests, custom transports) still get auth headers.
         self.client.headers.update(headers)
+        logger.info(
+            f"🔧 OpenAI ChatModel initialized | model={model} | base_url={base_url} | "
+            f"retries={retries}"
+        )
 
     async def generate(
         self,
@@ -42,8 +49,9 @@ class OpenAIChatModel(ChatModel):
         tools: list[Tool] | None = None,
         **kwargs: Any,
     ) -> ChatResult:
+        model = kwargs.pop("model", self.model)
         payload: dict[str, Any] = {
-            "model": kwargs.pop("model", self.model),
+            "model": model,
             "messages": messages,
             **self.default_params,
             **kwargs,
@@ -51,18 +59,50 @@ class OpenAIChatModel(ChatModel):
         if tools:
             payload["tools"] = [t.to_openai() for t in tools]
 
+        logger.debug(
+            f"📤 OpenAI API request | model={model} | messages={len(messages)} | "
+            f"tools={len(tools) if tools else 0}"
+        )
+
         async def attempt() -> httpx.Response:
             resp = await self.client.post("/chat/completions", json=payload)
             resp.raise_for_status()
             return resp
 
-        data = (await with_retries(attempt, attempts=self.retries)).json()
-        choice = data["choices"][0]
-        message = choice.get("message", {})
-        return ChatResult(
-            content=message.get("content") or "",
-            tool_calls=parse_openai_tool_calls(message),
-            usage=data.get("usage") or {},
-            stop_reason=choice.get("finish_reason"),
-            raw=data,
-        )
+        try:
+            response = await with_retries(attempt, attempts=self.retries)
+            data = response.json()
+            choice = data["choices"][0]
+            message = choice.get("message", {})
+
+            usage = data.get("usage") or {}
+            stop_reason = choice.get("finish_reason")
+            tool_calls = parse_openai_tool_calls(message)
+
+            logger.debug(
+                f"✅ OpenAI response | model={model} | stop_reason={stop_reason} | "
+                f"prompt_tokens={usage.get('prompt_tokens', 0)} | "
+                f"completion_tokens={usage.get('completion_tokens', 0)} | "
+                f"tool_calls={len(tool_calls)}"
+            )
+
+            return ChatResult(
+                content=message.get("content") or "",
+                tool_calls=tool_calls,
+                usage=usage,
+                stop_reason=stop_reason,
+                raw=data,
+            )
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                f"❌ OpenAI API error: {exc.response.status_code} | "
+                f"message={exc.response.text[:200] if hasattr(exc.response, 'text') else str(exc)}"
+            )
+            raise ModelError(
+                f"OpenAI API request failed with status {exc.response.status_code}",
+                context=f"Model: {model}, Messages: {len(messages)}",
+                suggestion="Check API key, rate limits, and model availability",
+            ) from exc
+        except Exception as exc:
+            logger.error(f"❌ OpenAI API request failed: {type(exc).__name__}: {exc}")
+            raise

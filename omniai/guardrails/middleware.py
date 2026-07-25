@@ -12,7 +12,10 @@ import re
 from dataclasses import dataclass, field
 
 from omniai.gateway.router import GuardrailViolation
+from omniai.logging import get_logger
 from omniai.protocol import OmniMessage
+
+logger = get_logger(__name__)
 
 # Heuristic markers of prompt-injection / jailbreak attempts.
 DEFAULT_INJECTION_PATTERNS: dict[str, str] = {
@@ -75,13 +78,28 @@ class PromptGuard:
 
     def __init__(self, policy: GuardrailPolicy | None = None):
         self.policy = policy or GuardrailPolicy()
+        logger.info(
+            f"🔧 Initializing PromptGuard | "
+            f"injection_rules={len(self.policy.injection_patterns)} | "
+            f"pii_patterns={len(self.policy.pii_patterns)} | "
+            f"block_on_injection={self.policy.block_on_injection}"
+        )
         self._injection = {
             name: re.compile(pat) for name, pat in self.policy.injection_patterns.items()
         }
         self._pii = {name: re.compile(pat) for name, pat in self.policy.pii_patterns.items()}
+        logger.debug(
+            f"✅ Compiled {len(self._injection)} injection patterns and {len(self._pii)} PII patterns"
+        )
 
     def check(self, text: str) -> GuardrailResult:
+        logger.debug(f"🔍 Checking content | length={len(text)}")
+
         injection_hits = [name for name, rx in self._injection.items() if rx.search(text)]
+        logger.debug(
+            f"🔍 Injection patterns checked | matches={len(injection_hits)} | patterns={injection_hits}"
+        )
+
         sanitized = text
         pii_hits = []
         for name, rx in self._pii.items():
@@ -102,8 +120,12 @@ class PromptGuard:
             else:
                 sanitized, n = rx.subn(replacement, sanitized)
             if n:
+                logger.debug(f"🔐 PII redacted | type={name} | count={n}")
                 pii_hits.append(name)
+
         blocked = bool(injection_hits) and self.policy.block_on_injection
+        logger.debug(f"📊 Guardrail check complete | blocked={blocked} | pii_found={len(pii_hits)}")
+
         return GuardrailResult(
             blocked=blocked,
             sanitized=sanitized,
@@ -113,16 +135,32 @@ class PromptGuard:
 
     def __call__(self, message: OmniMessage) -> OmniMessage:
         """GatewayRouter interceptor: block on injection, redact PII."""
-        result = self.check(message.content)
-        if result.blocked:
-            raise GuardrailViolation(
-                f"prompt rejected by guardrails: {', '.join(result.injection_hits)}"
-            )
-        if result.pii_hits:
-            message = message.model_copy(
-                update={
-                    "content": result.sanitized,
-                    "metadata": {**message.metadata, "pii_redacted": result.pii_hits},
-                }
-            )
-        return message
+        logger.debug(f"🛡️  Running PromptGuard | session={message.session_id}")
+
+        try:
+            result = self.check(message.content)
+            if result.blocked:
+                logger.warning(
+                    f"⚠️  Prompt injection detected | session={message.session_id} | "
+                    f"violations={', '.join(result.injection_hits)}"
+                )
+                raise GuardrailViolation(
+                    f"prompt rejected by guardrails: {', '.join(result.injection_hits)}"
+                )
+            if result.pii_hits:
+                logger.info(
+                    f"🔐 PII redacted from message | session={message.session_id} | types={result.pii_hits}"
+                )
+                message = message.model_copy(
+                    update={
+                        "content": result.sanitized,
+                        "metadata": {**message.metadata, "pii_redacted": result.pii_hits},
+                    }
+                )
+            logger.debug(f"✅ PromptGuard passed | session={message.session_id}")
+            return message
+        except GuardrailViolation:
+            raise
+        except Exception as exc:
+            logger.error(f"❌ PromptGuard failed: {type(exc).__name__}: {exc}")
+            raise

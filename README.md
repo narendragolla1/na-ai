@@ -38,7 +38,7 @@ python examples/basic_agent.py    # full pipeline in < 50 lines
 | Module | Purpose |
 | --- | --- |
 | `omniai.protocol` | Canonical `OmniMessage` flowing through every layer |
-| `omniai.engine` | `ModelEngine` factory over vLLM/SGLang subprocesses; maps `quantization="fp8"`, `tensor_parallel_size=2`, `devices=[0,1]`, etc. to backend CLI flags and env; OpenAI-compatible async client with circuit breaker + retries + backpressure; persistent `LoRARegistry` lifecycle (load/unload/rollback/reapply with slot eviction); pluggable backends via `register_backend` — see [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) |
+| `omniai.engine` | `ModelEngine` factory over vLLM/SGLang subprocesses; maps `quantization="fp8"`, `tensor_parallel_size=2`, `devices=[0,1]`, etc. to backend CLI flags and env; OpenAI-compatible async client with retries + circuit breaker + bulkhead; LoRA lifecycle (load/unload/rollback) via a persistent `LoRARegistry`; supervised restart; pluggable backends via `register_backend` — see [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) |
 | `omniai.graph` | LangGraph-style builder: Pydantic `State`, sync/async nodes, lambda conditional edges, bounded cycles, `@tool` decorator generating JSON Schema from type hints |
 | `omniai.gateway` | `GatewayRouter` (FastAPI) with REST, WebSocket, and Discord adapters; interceptor + observer pipeline |
 | `omniai.rag` | Factual knowledge layer: `VectorStore` contract with dependency-free `InMemoryVectorStore`/`HashEmbedder`, PDF-style chunked ingestion, grounding `Retriever` — facts are retrieved, never trained into weights |
@@ -65,10 +65,11 @@ engine = ModelEngine.create({
     "devices": [0, 1],              # GPU placement -> CUDA_VISIBLE_DEVICES
     "log_dir": "logs",              # capture server stdout/stderr
 })
-await engine.start(supervise=True)    # launches the server subprocess + watchdog
+await engine.start(supervise=True)   # launches the server (own process group), watches it
+await engine.warmup()                # prime CUDA graphs before real traffic
 text = await engine.chat_text([{"role": "user", "content": "hi"}])
 await engine.load_lora_adapter("skills-v2", "/adapters/skills-v2")  # zero downtime
-await engine.rollback_lora()          # previous adapter stays loaded — instant revert
+await engine.rollback_lora()         # previous adapter stays loaded — instant revert
 ```
 
 ### Build an agent graph

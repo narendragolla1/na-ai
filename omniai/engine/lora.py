@@ -88,7 +88,7 @@ class LoRARegistry:
         self.persist_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
     def _restore(self) -> None:
-        assert self.persist_path is not None  # only called when a path was given
+        assert self.persist_path is not None
         state = json.loads(self.persist_path.read_text(encoding="utf-8"))
         self.loaded = {r["name"]: AdapterRecord(**r) for r in state.get("loaded", [])}
         self.active = state.get("active")

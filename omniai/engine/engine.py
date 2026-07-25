@@ -2,14 +2,13 @@
 
 The engine owns the backend subprocess lifecycle and exposes a single async
 OpenAI-compatible client interface (``chat``) plus a managed LoRA lifecycle
-(load / unload / activate / rollback via :class:`LoRARegistry`), so the rest
-of the framework never touches backend-specific details.
+(load / unload / activate / rollback via :class:`~omniai.engine.lora.LoRARegistry`),
+so the rest of the framework never touches backend-specific details.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -24,7 +23,10 @@ from omniai.engine.resilience import (
     EngineUnavailable,
     with_retries,
 )
+from omniai.logging import EngineError, ErrorMessages, Suggestions, get_logger, trace_operation
 from omniai.telemetry import traced_span
+
+logger = get_logger(__name__)
 
 
 class ModelEngine:
@@ -58,31 +60,43 @@ class ModelEngine:
             self._semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
         return self._semaphore
 
+    @classmethod
+    def create(cls, config: EngineConfig | dict[str, Any], **kwargs: Any) -> ModelEngine:
+        """Factory: build the engine with the adapter for ``config.backend``."""
+        if isinstance(config, dict):
+            config = EngineConfig(**config)
+
+        logger.info(
+            f"🔧 Creating ModelEngine | backend={config.backend_name} | model={config.model}"
+        )
+
+        adapter_cls = ADAPTERS.get(config.backend_name)
+        if adapter_cls is None:
+            error = EngineError(
+                ErrorMessages.UNSUPPORTED_MODEL_TYPE.format(model_type=config.backend_name),
+                context=f"Unknown backend: {config.backend_name}",
+                suggestion=f"Supported backends: {', '.join(ADAPTERS.keys())}",
+            )
+            logger.error(str(error))
+            raise ValueError(str(error))
+
+        logger.debug("✅ ModelEngine created successfully")
+        return cls(config, adapter_cls(config), **kwargs)
+
     @property
     def active_lora(self) -> str | None:
         return self.lora.active
 
     @property
     def active_lora_path(self) -> str | None:
+        """Path of the active adapter, or None on the base model.
+
+        Kept alongside :attr:`active_lora` for the supervisor's restart path,
+        which re-applies both without reaching into the registry directly.
+        """
         if self.lora.active is None:
             return None
-        record = self.lora.loaded.get(self.lora.active)
-        return record.path if record is not None else None
-
-    @classmethod
-    def create(
-        cls,
-        config: EngineConfig | dict[str, Any],
-        *,
-        lora_registry: LoRARegistry | None = None,
-    ) -> ModelEngine:
-        """Factory: build the engine with the adapter for ``config.backend``."""
-        if isinstance(config, dict):
-            config = EngineConfig(**config)
-        adapter_cls = ADAPTERS.get(config.backend_name)
-        if adapter_cls is None:
-            raise ValueError(f"Unknown backend: {config.backend}")
-        return cls(config, adapter_cls(config), lora_registry=lora_registry)
+        return self.lora.loaded[self.lora.active].path
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -101,47 +115,108 @@ class ModelEngine:
         spawned — the engine attaches to the server at
         ``config.external_base_url`` and only health-checks it.
         """
-        if not self.config.managed:
-            if wait and not await self.adapter.wait_ready(timeout=timeout):
-                raise EngineUnavailable(
-                    f"external engine at {self.config.base_url} not ready within {timeout}s"
+        mode = "unmanaged (external)" if not self.config.managed else "managed (local)"
+        with trace_operation(
+            logger, f"Starting engine ({mode})", {"timeout": f"{timeout}s", "supervise": supervise}
+        ):
+            if not self.config.managed:
+                logger.info(f"📍 Connecting to external engine at {self.config.base_url}")
+                if wait and not await self.adapter.wait_ready(timeout=timeout):
+                    error = EngineError(
+                        ErrorMessages.ENGINE_UNAVAILABLE,
+                        context=f"External engine at {self.config.base_url} not responding",
+                        suggestion=Suggestions.CHECK_CONNECTIVITY,
+                    )
+                    logger.error(str(error))
+                    raise EngineUnavailable(str(error)) from None
+                logger.info(f"✅ Connected to external engine at {self.config.base_url}")
+                return
+
+            logger.info(
+                f"🚀 Spawning {self.config.backend_name} backend process on port {self.config.port}"
+            )
+            try:
+                self.adapter.start()
+                pid = self.adapter.process.pid if self.adapter.process else "unknown"
+                logger.debug(f"📊 Backend process spawned (PID: {pid})")
+            except Exception as exc:
+                error = EngineError(
+                    ErrorMessages.PROCESS_SPAWN_FAILED,
+                    context=str(exc),
+                    suggestion=Suggestions.CHECK_DEVICE_ID,
                 )
-            return
-        self.adapter.start()
-        if wait:
-            ready = await self.adapter.wait_ready(timeout=timeout)
-            if not ready:
-                self.adapter.stop()
-                raise EngineUnavailable(
-                    f"{self.config.backend_name} server did not become ready within {timeout}s"
+                logger.error(str(error))
+                raise
+
+            if wait:
+                logger.info(f"⏳ Waiting for backend to be ready (timeout: {timeout}s)")
+                ready = await self.adapter.wait_ready(timeout=timeout)
+                if not ready:
+                    self.adapter.stop()
+                    error = EngineError(
+                        ErrorMessages.ENGINE_TIMEOUT.format(timeout=timeout),
+                        context=(
+                            f"{self.config.backend_name} server failed to respond to health checks"
+                        ),
+                        suggestion=Suggestions.CHECK_GPU,
+                    )
+                    logger.error(str(error))
+                    raise EngineUnavailable(str(error)) from None
+                logger.info("✅ Backend is ready and responsive")
+
+            if supervise:
+                max_restarts = self.config.supervisor_max_restarts
+                logger.info(f"👁️  Starting process supervisor (max_restarts: {max_restarts})")
+                self.supervisor = EngineSupervisor(
+                    self, max_restarts=self.config.supervisor_max_restarts
                 )
-        if supervise:
-            self.supervisor = EngineSupervisor(self)
-            self.supervisor.start()
+                self.supervisor.start()
+                logger.debug("✅ Supervisor started")
 
     async def stop(self) -> None:
+        """Stop the engine and clean up resources."""
+        logger.info("🛑 Stopping engine")
+
         if self.supervisor is not None:
+            logger.debug("Stopping supervisor")
             await self.supervisor.stop()
             self.supervisor = None
+
         if self.config.managed:
+            logger.info("Terminating backend process")
             self.adapter.stop()
+            logger.debug("Backend process terminated")
+
         if self._client is not None:
+            logger.debug("Closing HTTP client")
             await self._client.aclose()
             self._client = None
 
+        logger.info("✅ Engine stopped")
+
     async def health(self) -> dict[str, Any]:
         """Liveness of the managed process and the HTTP endpoint."""
+        logger.debug("📊 Checking engine health")
         server_ok = False
         try:
             resp = await self.client.get("/health")
             server_ok = resp.status_code == 200
-        except httpx.HTTPError:
-            pass
-        return {
+        except httpx.HTTPError as exc:
+            logger.debug(f"⚠️  Health check failed: {type(exc).__name__}")
+
+        health_status = {
             "process": self.adapter.is_alive(),
             "server": server_ok,
             "active_lora": self.active_lora,
         }
+
+        # Log health summary
+        status_emoji = "✅" if all(health_status.values()) else "⚠️"
+        logger.debug(
+            f"{status_emoji} Engine health: process={health_status['process']} | "
+            f"server={health_status['server']} | active_lora={health_status['active_lora']}"
+        )
+        return health_status
 
     async def warmup(self) -> bool:
         """One tiny generation so CUDA graphs/caches are primed before real
@@ -149,11 +224,12 @@ class ModelEngine:
         try:
             await self.chat_text([{"role": "user", "content": "ping"}], max_tokens=1)
             return True
-        except (httpx.HTTPError, KeyError, EngineUnavailable):
+        except (httpx.HTTPError, KeyError):
             return False
 
     async def _post(self, path: str, payload: dict[str, Any]) -> httpx.Response:
         """POST with retry + circuit breaker; raises EngineUnavailable when down."""
+        logger.debug(f"📤 Posting to {path} | in_flight={self.in_flight}")
 
         async def attempt() -> httpx.Response:
             resp = await self.client.post(path, json=payload)
@@ -166,16 +242,27 @@ class ModelEngine:
         try:
             async with self.semaphore:  # backpressure toward the backend
                 self.in_flight += 1
+                logger.debug(f"📊 In-flight requests: {self.in_flight}")
                 try:
-                    return await self.breaker.call(guarded)
+                    response = await self.breaker.call(guarded)
+                    logger.debug(f"✅ Request succeeded | status={response.status_code}")
+                    return response
                 finally:
                     self.in_flight -= 1
-        except EngineUnavailable:
+        except EngineUnavailable as exc:
+            logger.error(f"❌ Engine unavailable: {exc}")
             raise
         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
             if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
+                logger.warning(f"⚠️  Client error: {exc.response.status_code} {exc}")
                 raise  # client errors are the caller's bug, not availability
-            raise EngineUnavailable(f"engine request failed: {exc}") from exc
+            logger.error(f"❌ Network error: {type(exc).__name__}: {exc}")
+            error = EngineError(
+                ErrorMessages.ENGINE_UNAVAILABLE,
+                context=f"Request to {path} failed: {type(exc).__name__}",
+                suggestion=Suggestions.RETRY_LATER,
+            )
+            raise EngineUnavailable(str(error)) from exc
 
     def set_system_prompt(self, prompt: str) -> None:
         """Pre-cache a system prompt prepended to every conversation.
@@ -239,11 +326,13 @@ class ModelEngine:
                 chunk = line.removeprefix("data:").strip()
                 if chunk == "[DONE]":
                     break
+                import json
+
                 delta = json.loads(chunk)["choices"][0].get("delta", {})
                 if content := delta.get("content"):
                     yield content
 
-    # -- LoRA lifecycle -------------------------------------------------------
+    # -- LoRA lifecycle ------------------------------------------------------
 
     async def load_lora_adapter(self, name: str, path: str, activate: bool = True) -> bool:
         """Load an adapter into the running server, zero downtime.
@@ -256,10 +345,10 @@ class ModelEngine:
         victim = self.lora.eviction_candidate(self.config.max_loras)
         if victim is not None:
             await self.unload_lora_adapter(victim)
-        endpoint = self.adapter.lora_load_endpoint()
-        payload = self.adapter.lora_load_payload(name, path)
         with traced_span("engine.load_lora", {"adapter": name}):
-            await self._post(endpoint, payload)
+            await self._post(
+                self.adapter.lora_load_endpoint(), self.adapter.lora_load_payload(name, path)
+            )
         self.lora.register(name, path)
         if activate:
             self.lora.activate(name)
@@ -271,10 +360,10 @@ class ModelEngine:
 
     async def unload_lora_adapter(self, name: str) -> bool:
         """Remove an adapter from the server and the registry."""
-        endpoint = self.adapter.lora_unload_endpoint()
-        payload = self.adapter.lora_unload_payload(name)
         with traced_span("engine.unload_lora", {"adapter": name}):
-            await self._post(endpoint, payload)
+            await self._post(
+                self.adapter.lora_unload_endpoint(), self.adapter.lora_unload_payload(name)
+            )
         self.lora.remove(name)
         return True
 
@@ -297,7 +386,8 @@ class ModelEngine:
         if self.lora.active is None:
             return False
         record = self.lora.loaded[self.lora.active]
-        endpoint = self.adapter.lora_load_endpoint()
-        payload = self.adapter.lora_load_payload(record.name, record.path)
-        await self._post(endpoint, payload)
+        await self._post(
+            self.adapter.lora_load_endpoint(),
+            self.adapter.lora_load_payload(record.name, record.path),
+        )
         return True

@@ -42,6 +42,8 @@ class EngineConfig(BaseModel):
     # Backpressure: bound on concurrent in-flight requests to the backend so
     # a burst that passes the rate limiter cannot pile onto the server.
     max_concurrent_requests: int = 32
+    # Restart cap for the optional EngineSupervisor (engine.start(supervise=True)).
+    supervisor_max_restarts: int = 5
 
     # Hardware optimizations (mapped per-backend by the adapters).
     quantization: str | None = None  # e.g. "fp8", "awq", "gptq"

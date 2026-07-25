@@ -24,8 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from omniai.logging import DatabaseError, get_logger
 from omniai.memory.models import Interaction, TrainingState
 from omniai.protocol import OmniMessage
+
+logger = get_logger(__name__)
 
 _WATERMARK_KEY = "watermark"
 
@@ -56,26 +59,49 @@ class InteractionBuffer:
         # COUNT(*) round-trip per logged message. Seeded from the DB once;
         # slight drift on upserts is harmless for threshold purposes.
         self._approx_count: int = 0
+        logger.info(
+            f"🔧 InteractionBuffer initialized | database={self.database_url} | "
+            f"threshold={threshold} | has_callback={on_threshold is not None}"
+        )
 
     async def _ensure_ready(self) -> AsyncEngine:
         if self._engine is None:
             async with self._ready_lock:
                 if self._engine is None:
-                    engine = create_async_engine(self.database_url)
-                    async with engine.begin() as conn:
-                        await conn.run_sync(SQLModel.metadata.create_all)
-                    self._engine = engine
+                    logger.info(f"🔌 Connecting to database | url={self.database_url}")
+                    try:
+                        engine = create_async_engine(self.database_url)
+                        async with engine.begin() as conn:
+                            await conn.run_sync(SQLModel.metadata.create_all)
+                        self._engine = engine
+                        logger.info("✅ Database connected and initialized")
+                    except Exception as exc:
+                        logger.error(f"❌ Database connection failed: {type(exc).__name__}: {exc}")
+                        raise DatabaseError(
+                            "Failed to connect to database",
+                            context=f"URL: {self.database_url}",
+                            suggestion="Check database URL and credentials",
+                        ) from exc
         if self._threshold_fired_at is None:
-            self._approx_count = await self._count()
-            self._threshold_fired_at = self._approx_count
+            try:
+                self._approx_count = await self._count()
+                self._threshold_fired_at = self._approx_count
+                logger.debug(f"📊 Interaction count initialized | count={self._approx_count}")
+            except Exception as exc:
+                logger.error(f"❌ Failed to count interactions: {type(exc).__name__}: {exc}")
+                raise
         return self._engine
 
     async def _count(self) -> int:
         from sqlalchemy import func
 
-        async with AsyncSession(self._engine) as session:
-            result = await session.exec(select(func.count()).select_from(Interaction))
-            return int(result.one())
+        try:
+            async with AsyncSession(self._engine) as session:
+                result = await session.exec(select(func.count()).select_from(Interaction))
+                return int(result.one())
+        except Exception as exc:
+            logger.error(f"❌ Failed to count interactions: {type(exc).__name__}: {exc}")
+            raise
 
     @staticmethod
     def _to_row(message: OmniMessage) -> Interaction:
@@ -97,22 +123,48 @@ class InteractionBuffer:
 
     async def log(self, message: OmniMessage) -> None:
         """Persist a message; fires ``on_threshold`` when the bar is crossed."""
-        await self._ensure_ready()
-        async with AsyncSession(self._engine) as session:
-            await session.merge(self._to_row(message))
-            await session.commit()
+        logger.debug(
+            f"💾 Logging interaction | id={message.id} | session={message.session_id} | "
+            f"role={message.role.value}"
+        )
+        try:
+            await self._ensure_ready()
+            async with AsyncSession(self._engine) as session:
+                await session.merge(self._to_row(message))
+                await session.commit()
+            logger.debug(f"✅ Interaction logged | id={message.id}")
+        except Exception as exc:
+            logger.error(f"❌ Failed to log interaction: {type(exc).__name__}: {exc}")
+            raise
+
         self._approx_count += 1
         if self.threshold is None or self.on_threshold is None:
             return
+
         if self._approx_count - (self._threshold_fired_at or 0) >= self.threshold:
+            logger.info(
+                f"🎯 Interaction threshold reached | threshold={self.threshold} | "
+                f"count={self._approx_count}"
+            )
             self._threshold_fired_at = self._approx_count
-            result = self.on_threshold()
-            if asyncio.iscoroutine(result):
-                await result
+            try:
+                result = self.on_threshold()
+                if asyncio.iscoroutine(result):
+                    await result
+                logger.info("✅ Threshold callback completed")
+            except Exception as exc:
+                logger.error(f"❌ Threshold callback failed: {type(exc).__name__}: {exc}")
+                raise
 
     async def count(self) -> int:
-        await self._ensure_ready()
-        return await self._count()
+        try:
+            await self._ensure_ready()
+            count = await self._count()
+            logger.debug(f"📊 Interaction count retrieved | count={count}")
+            return count
+        except Exception as exc:
+            logger.error(f"❌ Failed to get interaction count: {type(exc).__name__}: {exc}")
+            raise
 
     async def fetch(
         self,
@@ -125,35 +177,44 @@ class InteractionBuffer:
         ``since`` filters to rows created strictly after the given (naive
         UTC) timestamp — the incremental-training high-water mark.
         """
-        await self._ensure_ready()
-        query = select(Interaction)
-        if session_id is not None:
-            query = query.where(Interaction.session_id == session_id)
-        if since is not None:
-            if since.tzinfo is not None:
-                since = since.astimezone(UTC).replace(tzinfo=None)
-            query = query.where(Interaction.created_at > since)
-        # SQLModel types class-level field access as the field's Python type
-        # (datetime) rather than the SQLAlchemy column expression it actually
-        # is at runtime; order_by needs the latter.
-        query = query.order_by(Interaction.created_at, Interaction.id)  # type: ignore[arg-type]
-        if limit is not None:
-            query = query.limit(limit)
-        async with AsyncSession(self._engine) as session:
-            rows = (await session.exec(query)).all()
-        return [
-            {
-                "id": r.id,
-                "session_id": r.session_id,
-                "channel": r.channel,
-                "role": r.role,
-                "content": r.content,
-                "tool_calls": r.tool_calls,
-                "metadata": r.metadata_json,
-                "created_at": r.created_at.isoformat(),
-            }
-            for r in rows
-        ]
+        logger.debug(
+            f"🔍 Fetching interactions | session={session_id} | limit={limit} | "
+            f"since={since is not None}"
+        )
+        try:
+            await self._ensure_ready()
+            query = select(Interaction)
+            if session_id is not None:
+                query = query.where(Interaction.session_id == session_id)
+            if since is not None:
+                if since.tzinfo is not None:
+                    since = since.astimezone(UTC).replace(tzinfo=None)
+                query = query.where(Interaction.created_at > since)
+            # SQLModel types class-level field access as the field's Python type
+            # (datetime) rather than the SQLAlchemy column expression it actually
+            # is at runtime; order_by needs the latter.
+            query = query.order_by(Interaction.created_at, Interaction.id)  # type: ignore[arg-type]
+            if limit is not None:
+                query = query.limit(limit)
+            async with AsyncSession(self._engine) as session:
+                rows = (await session.exec(query)).all()
+            logger.debug(f"✅ Fetched interactions | count={len(rows)}")
+            return [
+                {
+                    "id": r.id,
+                    "session_id": r.session_id,
+                    "channel": r.channel,
+                    "role": r.role,
+                    "content": r.content,
+                    "tool_calls": r.tool_calls,
+                    "metadata": r.metadata_json,
+                    "created_at": r.created_at.isoformat(),
+                }
+                for r in rows
+            ]
+        except Exception as exc:
+            logger.error(f"❌ Failed to fetch interactions: {type(exc).__name__}: {exc}")
+            raise
 
     async def get_watermark(self) -> datetime | None:
         """Timestamp of the last interaction consumed by a successful
@@ -179,9 +240,14 @@ class InteractionBuffer:
             await session.commit()
 
     async def aclose(self) -> None:
+        logger.info("🛑 Closing InteractionBuffer")
         if self._engine is not None:
-            await self._engine.dispose()
-            self._engine = None
+            try:
+                await self._engine.dispose()
+                self._engine = None
+                logger.info("✅ Database connection closed")
+            except Exception as exc:
+                logger.error(f"❌ Error closing database: {type(exc).__name__}: {exc}")
 
     def close(self) -> None:
         """Sync-friendly close; schedules disposal if a loop is running."""

@@ -18,13 +18,9 @@ engine = ModelEngine.create({
     "log_dir": "logs",              # backend stdout/stderr captured here
     "max_concurrent_requests": 64,  # bulkhead: queue here, not in timeouts
 })
-await engine.start(supervise=True)   # launches the server + a restart watchdog
+await engine.start(supervise=True)  # launches the server, watches + restarts it
 await engine.warmup()
 ```
-
-Attaching to an already-running server (e.g. the vLLM container in the
-compose stack) instead of spawning one is one flag away: `managed=False,
-external_base_url="http://vllm:8000"`.
 
 ---
 
@@ -39,18 +35,17 @@ Every subsystem in the serving layer is one classic pattern, applied narrowly:
 | `BackendAdapter` + `VLLMAdapter`/`SGLangAdapter` | **Adapter** | Each backend's CLI flags, env vars, and LoRA endpoints differ; the adapter normalizes them to one interface. |
 | `BackendAdapter.build_env()` / `start()` / `stop()` | **Template Method** | The base class owns the invariant plumbing (process groups, log capture, GPU placement); subclasses fill in only the hooks (`_backend_env`, `build_command`, `lora_*_endpoint`). |
 | `register_backend(name, cls)` | **Registry (open/closed)** | Third-party backends (TGI, llama.cpp server, Triton) plug in without editing the framework. |
-| `with_retries` + `CircuitBreaker` | **Strategy + Circuit Breaker** | Transient failures get exponential backoff + jitter; sustained failure trips a three-state breaker (closed → open → half-open) so a dead backend fails fast instead of piling up retries. |
+| `CircuitBreaker` + `with_retries` | **Strategy** | Retry/breaker behavior is isolated in `omniai.engine.resilience`, testable independently of the engine. |
 | `max_concurrent_requests` semaphore | **Bulkhead** | A saturated backend queues at the engine boundary instead of exploding into timeouts everywhere. |
 | `LoRARegistry` | **Registry + Memento** | The server only knows load/unload; the registry remembers *which adapter is production*, its predecessor (rollback), and survives restarts via JSON persistence. |
-| `EngineSupervisor` | **Watchdog / Supervisor** with **crash-loop breaker** | GPU servers OOM and segfault routinely; recovery (restart → readiness → re-apply LoRA) must be automatic, and give-up-after-N restarts prevents thrashing a broken GPU. |
-| `managed` / `external_base_url` | **Strategy (attach vs. own)** | The same engine API drives a subprocess it owns or health-checks a server owned by something else (a compose stack, a Kubernetes deployment). |
+| `EngineSupervisor` | **Watchdog / Supervisor** | GPU servers OOM and segfault routinely; recovery (restart → readiness → re-apply LoRA) must be automatic, and a terminal-failure signal (surfaced to `/health/ready`) prevents thrashing a broken GPU silently. |
 | `extra_args` / `env` passthrough | **Escape hatch** | Abstractions over fast-moving servers must never trap the user; any flag/env the backend grows tomorrow is reachable today. |
 
-The composition rule: **Facade in front, Adapters below, resilience wrapped
-around every call, Registries for anything with a lifecycle, a Supervisor
-around anything with a process.** That combination is what lets one config
-dict express `{backend} × {quantization} × {parallelism} × {placement} ×
-{LoRA}` without special cases.
+The composition rule: **Facade in front, Adapters below, Strategies injected,
+Registries for anything with a lifecycle, a Supervisor around anything with a
+process.** That combination is what lets one config dict express
+`{backend} × {quantization} × {parallelism} × {placement} × {LoRA}` without
+special cases.
 
 ## 2. How the abstract methods compose
 
@@ -86,14 +81,13 @@ quietly at serve time.**
 | Two engines fight over GPU 0 | Declarative placement: `devices=[2,3]` → `CUDA_VISIBLE_DEVICES`, validated against `tensor_parallel_size` | `EngineConfig.devices` |
 | Orphaned tensor-parallel workers keep GPU memory after a kill | Process-group lifecycle: `start_new_session=True` + `killpg`, TERM then KILL | `BackendAdapter.start/stop` |
 | First request after boot is slow (CUDA graph capture) | Explicit warm-up generation after readiness | `ModelEngine.warmup` |
-| Transient 503/timeout during load spikes | Exponential backoff + jitter, only on retryable statuses | `with_retries` |
-| Backend is down for an extended outage | Circuit breaker fails fast (`EngineUnavailable`, mapped to HTTP 503 + `Retry-After`) instead of retrying into a dead server | `CircuitBreaker` |
+| Transient 5xx/timeout during load spikes | Exponential backoff + jitter, plus a circuit breaker that fails fast while the backend is down | `omniai.engine.resilience` |
 | One slow backend melts every caller | Bulkhead admission at the engine | `max_concurrent_requests` |
 | Skill prompts re-prefilled on every request | Prefix caching on by default on both backends | `prefix_caching` flag mapping |
 | Continuous learning fills all LoRA slots and stalls | Slot-aware eviction: oldest non-active, non-rollback adapter unloaded automatically | `ModelEngine.load_lora_adapter` |
 | Bad adapter went live, need out *now* | `rollback_lora()` — predecessor stays loaded, rollback is one cheap call | `LoRARegistry.previous` |
-| Server restarted, forgot its adapters | Persistent registry + `reapply_active_lora()` on recovery | `LoRARegistry(persist_path=...)`, `EngineSupervisor` |
-| Server dies at 3 a.m. | Supervisor: health watchdog, restart with backoff, re-applies the active LoRA, gives up (and reports why) after `max_restarts` | `EngineSupervisor` |
+| Server restarted, forgot its adapters | Persistent registry + `reapply_active_lora()` on recovery | `LoRARegistry(persist_path=...)` |
+| Server dies at 3 a.m. | Supervisor: process watchdog, restart with backoff, terminal failures recorded (never silent) | `EngineSupervisor` (`engine.start(supervise=True)`) |
 | Health endpoint says OK but process is dead | Health = process liveness **and** HTTP probe | `ModelEngine.health` |
 
 ## 4. Techniques to reach for as requirements grow
@@ -133,7 +127,7 @@ requirements, in the order they usually arrive:
 2. **Environment is configuration** — placement and backend gates are config
    fields, not shell exports someone forgets.
 3. **Every mutation has an inverse** — load/unload, activate/rollback,
-   start/stop, managed/attach. If you can't undo it, you can't operate it.
+   start/stop. If you can't undo it, you can't operate it.
 4. **State that outlives the process is persisted** — the adapter registry
    survives restarts; in-memory-only state is treated as cache.
 5. **Fail fast on invalid combinations** — unsupported `kv_cache`, devices
