@@ -9,7 +9,10 @@ from __future__ import annotations
 import abc
 from typing import Any
 
+from omniai.logging import ValidationError, get_logger
 from omniai.protocol import Channel, OmniMessage, Role
+
+logger = get_logger(__name__)
 
 
 class ChannelAdapter(abc.ABC):
@@ -32,22 +35,48 @@ class RestAdapter(ChannelAdapter):
     channel = Channel.REST
 
     def to_omni(self, payload: dict[str, Any]) -> OmniMessage:
-        return OmniMessage(
-            channel=self.channel,
-            role=Role.USER,
-            content=payload.get("content", ""),
-            session_id=payload.get("session_id", "default"),
-            metadata=payload.get("metadata", {}),
+        content = payload.get("content", "")
+        session_id = payload.get("session_id", "default")
+        metadata = payload.get("metadata", {})
+
+        logger.debug(
+            f"📬 Converting REST payload to OmniMessage | "
+            f"session={session_id} | content_len={len(content)} | metadata_keys={list(metadata.keys())}"
         )
 
+        try:
+            message = OmniMessage(
+                channel=self.channel,
+                role=Role.USER,
+                content=content,
+                session_id=session_id,
+                metadata=metadata,
+            )
+            logger.debug(f"✅ Converted to OmniMessage | id={message.id}")
+            return message
+        except Exception as exc:
+            logger.error(f"❌ Failed to convert REST payload: {type(exc).__name__}: {exc}")
+            raise
+
     def from_omni(self, message: OmniMessage) -> dict[str, Any]:
-        return {
-            "id": message.id,
-            "session_id": message.session_id,
-            "role": message.role.value,
-            "content": message.content,
-            "metadata": message.metadata,
-        }
+        logger.debug(
+            f"📤 Converting OmniMessage to REST | "
+            f"id={message.id} | session={message.session_id} | content_len={len(message.content)}"
+        )
+
+        try:
+            response = {
+                "id": message.id,
+                "session_id": message.session_id,
+                "role": message.role.value,
+                "content": message.content,
+                "metadata": message.metadata,
+            }
+            logger.debug(f"✅ Converted to REST payload")
+            return response
+        except Exception as exc:
+            logger.error(f"❌ Failed to convert to REST: {type(exc).__name__}: {exc}")
+            raise
 
 
 class WebSocketAdapter(RestAdapter):
@@ -60,22 +89,55 @@ class DiscordAdapter(ChannelAdapter):
     """Discord interaction/webhook payloads."""
 
     channel = Channel.DISCORD
+    MAX_CONTENT_LENGTH = 2000
 
     def to_omni(self, payload: dict[str, Any]) -> OmniMessage:
+        content = payload.get("content", "")
+        channel_id = str(payload.get("channel_id", "discord"))
         author = payload.get("author", {}) or payload.get("member", {}).get("user", {})
-        return OmniMessage(
-            channel=self.channel,
-            role=Role.USER,
-            content=payload.get("content", ""),
-            session_id=str(payload.get("channel_id", "discord")),
-            metadata={
-                "discord_message_id": payload.get("id"),
-                "author_id": author.get("id"),
-                "author_name": author.get("username"),
-                "guild_id": payload.get("guild_id"),
-            },
+
+        logger.debug(
+            f"📬 Converting Discord payload to OmniMessage | "
+            f"channel={channel_id} | author={author.get('username')} | content_len={len(content)}"
         )
 
+        try:
+            message = OmniMessage(
+                channel=self.channel,
+                role=Role.USER,
+                content=content,
+                session_id=channel_id,
+                metadata={
+                    "discord_message_id": payload.get("id"),
+                    "author_id": author.get("id"),
+                    "author_name": author.get("username"),
+                    "guild_id": payload.get("guild_id"),
+                },
+            )
+            logger.debug(f"✅ Converted Discord payload to OmniMessage | id={message.id}")
+            return message
+        except Exception as exc:
+            logger.error(f"❌ Failed to convert Discord payload: {type(exc).__name__}: {exc}")
+            raise
+
     def from_omni(self, message: OmniMessage) -> dict[str, Any]:
-        # Discord hard-caps message content at 2000 characters.
-        return {"content": message.content[:2000]}
+        content_len = len(message.content)
+        truncated = content_len > self.MAX_CONTENT_LENGTH
+
+        logger.debug(
+            f"📤 Converting OmniMessage to Discord | "
+            f"id={message.id} | content_len={content_len} | truncated={truncated}"
+        )
+
+        if truncated:
+            logger.warning(
+                f"⚠️  Discord content truncated | original_len={content_len} | max={self.MAX_CONTENT_LENGTH}"
+            )
+
+        try:
+            response = {"content": message.content[:self.MAX_CONTENT_LENGTH]}
+            logger.debug(f"✅ Converted to Discord payload")
+            return response
+        except Exception as exc:
+            logger.error(f"❌ Failed to convert to Discord: {type(exc).__name__}: {exc}")
+            raise
