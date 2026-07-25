@@ -16,7 +16,6 @@ from __future__ import annotations
 import abc
 import asyncio
 import os
-import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +23,7 @@ from typing import IO, Any
 
 import httpx
 
+from omniai.engine import process_compat
 from omniai.engine.config import EngineConfig
 from omniai.logging import ProcessError, get_logger
 
@@ -101,9 +101,10 @@ class BackendAdapter(abc.ABC):
     def start(self) -> subprocess.Popen:
         """Launch the backend server in its own process group.
 
-        ``start_new_session=True`` puts the server and any tensor-parallel
-        workers it spawns into one process group, so :meth:`stop` can kill
-        the whole tree and release GPU memory reliably.
+        Puts the server and any tensor-parallel workers it spawns into one
+        process group (POSIX: ``start_new_session``; Windows:
+        ``CREATE_NEW_PROCESS_GROUP``), so :meth:`stop` can signal the whole
+        tree and release GPU memory reliably on any platform.
         """
         logger.info(f"🚀 Starting {self.config.backend_name} backend on port {self.config.port}")
         try:
@@ -115,7 +116,7 @@ class BackendAdapter(abc.ABC):
                 stdout=sink,
                 stderr=subprocess.STDOUT if sink is not subprocess.DEVNULL else subprocess.DEVNULL,
                 env=self.build_env(),
-                start_new_session=True,
+                **process_compat.new_group_popen_kwargs(),
             )
             logger.info(f"✅ Backend process spawned | pid={self.process.pid}")
             return self.process
@@ -127,29 +128,18 @@ class BackendAdapter(abc.ABC):
                 suggestion="Check system resources and model availability",
             ) from exc
 
-    def _signal_group(self, sig: signal.Signals) -> None:
-        assert self.process is not None
-        try:
-            if hasattr(os, "killpg"):
-                os.killpg(os.getpgid(self.process.pid), sig)
-            else:  # pragma: no cover - non-POSIX fallback
-                self.process.send_signal(sig)
-            logger.debug(f"📍 Sent signal {sig.name} to process group")
-        except ProcessLookupError:
-            logger.debug("⚠️  Process already terminated")
-
     def stop(self) -> None:
         logger.info("🛑 Stopping backend process")
         if self.process is not None:
             try:
-                logger.debug(f"📍 Sending SIGTERM to process {self.process.pid}")
-                self._signal_group(signal.SIGTERM)
+                logger.debug(f"📍 Sending graceful stop to process {self.process.pid}")
+                process_compat.terminate_group(self.process)
                 try:
                     self.process.wait(timeout=15)
                     logger.info("✅ Process terminated gracefully")
                 except subprocess.TimeoutExpired:
-                    logger.warning("⚠️  Process did not respond to SIGTERM, sending SIGKILL")
-                    self._signal_group(signal.SIGKILL)
+                    logger.warning("⚠️  Process did not stop gracefully, forcing kill")
+                    process_compat.kill_group(self.process)
                     self.process.wait(timeout=5)
                     logger.info("✅ Process killed forcefully")
             except Exception as exc:
