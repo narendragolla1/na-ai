@@ -28,6 +28,7 @@ flowchart LR
 | [Tutorials](tutorials/index.md) | End-to-end walkthroughs: [build an agent](tutorials/build_an_agent.md), [ship a multi-channel chatbot](tutorials/multi_channel_chatbot.md), [set up continuous learning](tutorials/continuous_learning.md). |
 | [How-to guides](how_to/index.md) | Short, task-oriented recipes — "How do I do X?" — for everything from [tool calling](how_to/tool_calling.md) to [Docker Compose deployment](how_to/deploy_docker_compose.md). |
 | [Conceptual guide](concepts/index.md) | Explanations of the framework's building blocks and the reasoning behind them. |
+| [Learning materials](learning/index.md) | Newsletter-style concept explainers — [system design](learning/system_design_bytebytego.md), [data science](learning/data_science_dailydose.md), [LLM research](learning/ahead_of_ai.md) — mapping the ideas behind this framework to the broader field. |
 | [Integrations](integrations/index.md) | Model providers: [OpenAI](integrations/openai.md), [Anthropic](integrations/anthropic.md), and [self-hosted engines](integrations/self_hosted.md). |
 | [API reference](reference/index.md) | Hand-written reference for every public module. |
 | [Security](security.md) | Security model and how to report vulnerabilities. |
